@@ -43,7 +43,7 @@ A live TV app for the **HDHomeRun FLEX 4K** (and every other HDHomeRun tuner), b
 
 ## Building the .ipa with Xcode 27.1
 
-1. Open `OverAir.xcodeproj` in Xcode 27.1. Swift Package Manager fetches **VLCKit** (`tylerjonesio/vlckit-spm` 3.6.0) automatically. It's a large download the first time.
+1. Open `OverAir.xcodeproj` in Xcode 27.1 or later. There are no dependencies to download.
 2. Choose your Team under *Signing & Capabilities*, or leave it unsigned to sign later. Change the bundle ID (`com.overair.app`) if needed.
 3. Either:
    - **Run** on a connected iPhone, or
@@ -69,6 +69,10 @@ When unfolded, the Duo reports a *regular* width, and OverAir switches to its si
 - **ATSC 3.0:** HEVC video plays. Some stations use **AC-4 audio** or **DRM-encrypted** streams that no third-party player can decode. These channels are labeled. DRM channels are hidden by default.
 - **UDP broadcast discovery** on iOS needs Apple's multicast entitlement, which personal signing can't get. OverAir falls back to the cloud lookup and the subnet sweep, which work with any signing.
 - **Recording to iPhone** needs OverAir to stay running: open, or playing audio in the background. For scheduled, unattended recordings use HDHomeRun storage.
-- Picture-in-Picture isn't available with VLCKit 3. The mini player covers most of the same use while you're in the app.
+- ATSC 3.0 stations using **AC-4 audio** play video only. iOS has no AC-4 decoder, and OverAir labels those tracks.
 
 OverAir is independent and not affiliated with SiliconDust. HDHomeRun is a trademark of SiliconDust USA Inc.
+
+## Testing without a tuner
+
+`ci/mock_hdhomerun.py` emulates a FLEX 4K and SiliconDust's cloud API. It serves the lineup, guide, recordings and tuner status, plus live MPEG-2/AC-3 streams that `ci/make_media.sh` generates with FFmpeg. The **Simulator screenshots** workflow runs the app against it on iPhone and iPhone Duo simulators and uploads screenshots of every screen.
