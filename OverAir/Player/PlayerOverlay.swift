@@ -176,6 +176,7 @@ struct PlayerOverlay: View {
 
     private func scheduleHide() {
         hideTask?.cancel()
+        if ProcessInfo.processInfo.environment["OVERAIR_PIN_CONTROLS"] != nil { return } // screenshots
         hideTask = Task {
             try? await Task.sleep(nanoseconds: 4_500_000_000)
             guard !Task.isCancelled else { return }

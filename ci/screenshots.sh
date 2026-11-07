@@ -10,8 +10,15 @@ python3 ci/mock_hdhomerun.py ci/media 5004 > "$OUT/mock-server.log" 2>&1 &
 sleep 2
 curl -s http://127.0.0.1:5004/discover.json | head -c 120; echo
 
-RUNTIME=$(xcrun simctl list runtimes -j | python3 -c 'import json,sys; r=[x for x in json.load(sys.stdin)["runtimes"] if x["platform"]=="iOS" and x["isAvailable"]]; print(sorted(r,key=lambda x:[int(p) for p in x["version"].split(".")])[-1]["identifier"])')
-echo "Runtime: $RUNTIME"
+xcrun simctl list runtimes > "$OUT/runtimes.txt"
+# Newest available iOS runtime that supports a given device type.
+runtime_for() {
+  xcrun simctl list runtimes -j | python3 -c "import json,sys
+want=sys.argv[1]
+rs=[r for r in json.load(sys.stdin)['runtimes'] if r.get('platform')=='iOS' and r.get('isAvailable') and any(d.get('identifier')==want for d in r.get('supportedDeviceTypes',[]))]
+rs.sort(key=lambda r:[int(p) for p in r['version'].split('.')])
+print(rs[-1]['identifier'] if rs else '')" "$1"
+}
 
 # Exact device-type name → identifier, trying candidates in order.
 pick() {
@@ -33,16 +40,18 @@ launch() { # udid, scenario, log
   SIMCTL_CHILD_OVERAIR_API_BASE=http://127.0.0.1:5004/api \
   SIMCTL_CHILD_OVERAIR_CLOUD_DISCOVER=http://127.0.0.1:5004/discover \
   SIMCTL_CHILD_OVERAIR_SCENARIO=$2 \
+  SIMCTL_CHILD_OVERAIR_PIN_CONTROLS=1 \
     xcrun simctl launch --terminate-running-process --stdout="$3" --stderr="$3" "$1" com.overair.app > /dev/null 2>> "$OUT/launch-errors.txt"
 }
 
-SCENARIOS="live player player-tips player-mini guide recordings search settings multiview"
-for entry in "iphone:iPhone 18 Pro:iPhone 17 Pro:iPhone 17" "duo:iPhone Duo"; do
+SCENARIOS="live player player-mini guide recordings search settings multiview"
+for entry in "duo:iPhone Duo" "iphone:iPhone 18 Pro:iPhone 17 Pro:iPhone 17"; do
   TAG=${entry%%:*}
   IFS=':' read -r -a NAMES <<< "${entry#*:}"
   TYPE=$(pick "${NAMES[@]}")
   if [ -z "$TYPE" ]; then echo "No device type for $TAG"; continue; fi
-  echo "== $TAG ($TYPE)"
+  RUNTIME=$(runtime_for "$TYPE")
+  echo "== $TAG ($TYPE on $RUNTIME)"
   UDID=$(xcrun simctl create "shots-$TAG" "$TYPE" "$RUNTIME") || { echo "create failed"; continue; }
   xcrun simctl boot "$UDID"
   xcrun simctl bootstatus "$UDID" -b > /dev/null

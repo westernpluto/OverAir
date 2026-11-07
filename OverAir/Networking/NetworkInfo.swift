@@ -65,6 +65,7 @@ enum NetworkInfo {
 
     /// True when the phone is on the same /24 as the device (i.e. at home on Wi-Fi).
     static func isOnLAN(of device: HDHRDevice?) -> Bool {
+        if let host = device?.baseURL.host, host == "127.0.0.1" || host == "localhost" { return true }
         guard let host = device?.baseURL.host, let deviceIP = octets(host), let mine = lanAddress.flatMap(octets) else { return false }
         return Array(deviceIP.prefix(3)) == Array(mine.prefix(3))
     }

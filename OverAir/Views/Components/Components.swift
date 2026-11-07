@@ -390,9 +390,13 @@ struct SectionHeader: View {
 struct ConnectionBadge: View {
     var state: ConnectionState
     var body: some View {
-        Label(state.title, systemImage: state.symbol)
-            .font(.caption.weight(.semibold))
-            .foregroundStyle(state == .offline ? .red : state == .remote ? .cyan : .secondary)
+        HStack(spacing: 4) {
+            Image(systemName: state.symbol).imageScale(.small)
+            Text(state.title)
+        }
+        .font(.caption.weight(.semibold))
+        .foregroundStyle(state == .offline ? .red : state == .remote ? .cyan : .secondary)
+        .accessibilityElement(children: .combine)
     }
 }
 

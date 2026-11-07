@@ -81,8 +81,10 @@ struct LibraryView: View {
                 if !dvr.continueWatching.isEmpty {
                     shelf("Continue Watching", episodes: dvr.continueWatching)
                 }
-                if !dvr.recentlyAdded.isEmpty {
-                    shelf("Recently Recorded", episodes: Array(dvr.recentlyAdded.prefix(12)))
+                let continuing = Set(dvr.continueWatching.map(\.id))
+                let recent = dvr.recentlyAdded.filter { !continuing.contains($0.id) }
+                if !recent.isEmpty {
+                    shelf("Recently Recorded", episodes: Array(recent.prefix(12)))
                 }
 
                 if !recorder.recordings.isEmpty || !recorder.active.isEmpty {
@@ -165,15 +167,18 @@ struct LibraryView: View {
         VStack(alignment: .leading, spacing: 10) {
             SectionHeader(title: title).padding(.horizontal)
             ScrollView(.horizontal, showsIndicators: false) {
-                HStack(spacing: 12) {
+                LazyHStack(spacing: 12) {
                     ForEach(episodes) { ep in
                         EpisodeCard(episode: ep)
+                            .containerRelativeFrame(.horizontal, count: hSize == .regular ? 4 : 5, span: hSize == .regular ? 1 : 3, spacing: 12)
                             .onTapGesture { playback.play(ep) }
                             .contextMenu { EpisodeMenu(episode: ep) }
                     }
                 }
-                .padding(.horizontal)
+                .scrollTargetLayout()
             }
+            .contentMargins(.horizontal, 16, for: .scrollContent)
+            .scrollTargetBehavior(.viewAligned)
         }
     }
 }
@@ -206,7 +211,7 @@ struct EpisodeCard: View {
         VStack(alignment: .leading, spacing: 6) {
             ZStack(alignment: .bottomLeading) {
                 Artwork(url: episode.imageURL, fallbackSymbol: "play.rectangle")
-                    .frame(width: 220, height: 124)
+                    .aspectRatio(16 / 9, contentMode: .fit)
                 if episode.isRecordingNow {
                     Pill(text: "REC", color: Theme.record, symbol: "record.circle").padding(8)
                 }
@@ -217,7 +222,6 @@ struct EpisodeCard: View {
             Text(episode.title).font(.subheadline.weight(.semibold)).lineLimit(1)
             Text(episode.subtitleLine ?? (episode.recordStart.map(Fmt.smartDay) ?? "")).font(.caption).foregroundStyle(.secondary).lineLimit(1)
         }
-        .frame(width: 220)
     }
 }
 

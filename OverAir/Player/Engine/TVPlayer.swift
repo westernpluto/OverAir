@@ -87,7 +87,7 @@ final class TVPlayer {
     private(set) var state: State = .idle {
         didSet {
             #if DEBUG
-            if oldValue != state { print("[TVPlayer] state \(state)") }
+            if oldValue != state { debugLog("state \(state)") }
             #endif
         }
     }
@@ -358,8 +358,9 @@ final class TVPlayer {
         guard gen == generation else { return }
         #if DEBUG
         switch event {
-        case .frame, .info, .captions: break
-        default: print("[TVPlayer] \(event)")
+        case .frame, .captions: break
+        case let .info(i): debugLog("info \(i.videoCodec ?? "-") \(i.width)x\(i.height) \(i.interlaced ? "i" : "p") deint=\(i.deinterlacing) audio=\(i.audioCodec ?? "-") \(i.audioChannels)ch")
+        default: debugLog("\(event)")
         }
         #endif
         switch event {
@@ -581,4 +582,11 @@ final class FileByteSource: ByteSource {
         guard let data = try? handle.read(upToCount: max) else { return [] }
         return [UInt8](data)
     }
+}
+
+/// Debug-build logging to stderr (unbuffered, so it survives the process being killed).
+func debugLog(_ message: @autoclosure () -> String) {
+    #if DEBUG
+    FileHandle.standardError.write(Data("[OverAir] \(message())\n".utf8))
+    #endif
 }

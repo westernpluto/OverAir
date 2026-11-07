@@ -414,7 +414,7 @@ struct GuideRowCells: View {
     private func cell(_ p: GuideProgram) -> some View {
         let x0 = max(xFor(p.start), 0)
         let width = max(xFor(p.end) - x0, 8)
-        let pinned = max(0, viewportMinX - (leadingX + x0))
+        let pinned = max(0, viewportMinX - x0)
         return ProgramCell(program: p, now: now, highlighted: highlight == nil || p.genres.contains(highlight!),
                            scheduled: isScheduled(p), pinnedLeading: min(pinned, max(width - 60, 0)))
             .frame(width: width - 2, height: rowHeight - 2)
