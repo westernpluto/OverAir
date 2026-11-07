@@ -133,6 +133,9 @@ final class TVPlayer {
     @ObservationIgnored private var timer: Timer?
     @ObservationIgnored private var firstPTS: Int64?       // first PTS of a recording (position 0)
     @ObservationIgnored private var lastFramePTS: Int64 = 0
+    @ObservationIgnored private var lastFrameWall = Date()     // when the decoder last produced a new frame
+    @ObservationIgnored private var lastReanchor = Date.distantPast
+    @ObservationIgnored private var stalled = false             // buffering because the stream ran dry (not a seek)
     @ObservationIgnored private var sourceURL: URL?
     @ObservationIgnored private var totalBytes: Int64?
     @ObservationIgnored private var pendingCaptions: [(pts: Int64, rows: [CEA608Decoder.Row])] = []
@@ -285,6 +288,7 @@ final class TVPlayer {
     func resume() {
         guard state == .paused else { return }
         worker?.setPaused(false)
+        lastFrameWall = Date()
         synchronizer.rate = rate
         state = .playing
     }
@@ -383,10 +387,13 @@ final class TVPlayer {
             }
         case let .firstFrame(pts):
             lastFramePTS = pts
+            lastFrameWall = Date()
+            stalled = false
             synchronizer.setRate(state == .paused ? 0 : rate, time: CMTime(value: pts, timescale: 90000))
             if state != .paused { state = .playing }
             if firstPTS == nil && !isLive { firstPTS = pts }
         case let .frame(pts):
+            if pts > lastFramePTS { lastFrameWall = Date() }
             lastFramePTS = pts
         case let .info(newInfo):
             var merged = newInfo
@@ -442,9 +449,26 @@ final class TVPlayer {
         if state == .opening && Date().timeIntervalSince(openedAt) > 15 {
             state = .failed("The tuner didn't send any video. It may be busy, or the signal is too weak.")
         }
-        if state == .playing, synchronizer.rate > 0, lastFramePTS > 0, nowPTS - lastFramePTS > 90000 * 4 {
-            state = .buffering
-        } else if state == .buffering, lastFramePTS > nowPTS {
+        let sinceFrame = Date().timeIntervalSince(lastFrameWall)
+        if state == .playing, synchronizer.rate > 0, lastFramePTS > 0 {
+            if sinceFrame > 3 {
+                // Nothing new from the tuner for a while: hold the picture where it is.
+                stalled = true
+                state = .buffering
+                synchronizer.setRate(0, time: CMTime(value: lastFramePTS, timescale: 90000))
+            } else if Date().timeIntervalSince(lastReanchor) > 5 {
+                let lag = nowPTS - lastFramePTS
+                // Video behind the clock (slow decode, late burst) or far ahead of it (a timestamp jump):
+                // move the clock to the video so frames are shown instead of dropped or held back.
+                if lag > 90000 || lag < -90000 * 3 {
+                    lastReanchor = Date()
+                    synchronizer.setRate(rate, time: CMTime(value: lastFramePTS - 9000, timescale: 90000))
+                }
+            }
+        } else if state == .buffering, stalled, sinceFrame < 1 {
+            stalled = false
+            lastReanchor = Date()
+            synchronizer.setRate(rate, time: CMTime(value: lastFramePTS - 9000, timescale: 90000))
             state = .playing
         }
     }

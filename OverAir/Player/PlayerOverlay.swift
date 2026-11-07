@@ -338,7 +338,11 @@ struct PlayerControls: View {
                 .transition(.move(edge: .bottom).combined(with: .opacity))
             }
             actionBar
+                // Four buttons share one row; past this size the labels can't fit. VoiceOver and the
+                // Large Content Viewer still read them in full.
+                .dynamicTypeSize(...DynamicTypeSize.xxLarge)
         }
+        .dynamicTypeSize(...DynamicTypeSize.accessibility2)
     }
 
     private var actionBar: some View {
@@ -511,12 +515,14 @@ struct ActionLabel: View {
     var symbol: String
     var active: Bool
     var activeColor: Color = .accentColor
+    @ScaledMetric(relativeTo: .body) private var iconHeight: CGFloat = 22
 
     var body: some View {
         VStack(spacing: 3) {
             Image(systemName: symbol)
                 .font(.body.weight(.semibold))
                 .foregroundStyle(active ? activeColor : .white)
+                .frame(height: iconHeight)
             Text(title)
                 .font(.caption2.weight(.semibold))
                 .lineLimit(1)
@@ -526,6 +532,7 @@ struct ActionLabel: View {
         .padding(.vertical, 2)
         .glass(in: RoundedRectangle(cornerRadius: 16, style: .continuous))
         .contentShape(Rectangle())
+        .accessibilityShowsLargeContentViewer { Label(title, systemImage: symbol) }
     }
 }
 

@@ -359,7 +359,9 @@ struct GuideView: View {
     // MARK: Navigation
 
     private func jump(to date: Date, animated: Bool = true) {
-        let target = max(0, x(for: date) - 60)
+        // Start at the current half-hour slot, like a printed guide, so no sliver of the previous show is visible.
+        let slot = Date(timeIntervalSinceReferenceDate: (date.timeIntervalSinceReferenceDate / 1800).rounded(.down) * 1800)
+        let target = max(0, x(for: slot))
         if animated {
             withAnimation(.snappy) { position.scrollTo(x: target) }
         } else {
@@ -416,7 +418,8 @@ struct GuideRowCells: View {
         let width = max(xFor(p.end) - x0, 8)
         let pinned = max(0, viewportMinX - x0)
         return ProgramCell(program: p, now: now, highlighted: highlight == nil || p.genres.contains(highlight!),
-                           scheduled: isScheduled(p), pinnedLeading: min(pinned, max(width - 60, 0)))
+                           scheduled: isScheduled(p), pinnedLeading: min(pinned, max(width - 60, 0)),
+                           showsText: width - pinned >= 56)
             .frame(width: width - 2, height: rowHeight - 2)
             .offset(x: leadingX + x0 + 1, y: rowY + 1)
             .onTapGesture { onSelect(p) }
@@ -431,6 +434,8 @@ struct ProgramCell: View {
     var scheduled: Bool
     /// How far the cell's leading edge is scrolled under the channel column, so the title stays visible.
     var pinnedLeading: CGFloat
+    /// False when only a sliver of the cell is on screen; clipped words look broken, so show none.
+    var showsText = true
 
     var body: some View {
         let airing = program.isAiring(at: now)
@@ -467,6 +472,7 @@ struct ProgramCell: View {
             .padding(.horizontal, 8)
             .padding(.vertical, 6)
             .offset(x: pinnedLeading)
+            .opacity(showsText ? 1 : 0)
         }
         .overlay(RoundedRectangle(cornerRadius: 8, style: .continuous).stroke(airing ? Theme.live.opacity(0.5) : Theme.cardStroke, lineWidth: airing ? 1 : 0.5))
         .opacity(highlighted ? (past ? 0.45 : 1) : 0.25)
