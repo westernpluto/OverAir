@@ -51,12 +51,7 @@ final class PlayerController {
     var aspect: AspectMode = .fit { didSet { applyAspect() } }
 
     /// The view libVLC renders into. Re-parented into whichever SwiftUI surface shows video.
-    let videoView: UIView = {
-        let v = UIView()
-        v.backgroundColor = .black
-        v.isUserInteractionEnabled = false
-        return v
-    }()
+    let videoView: UIView = VideoHostView()
 
     @ObservationIgnored private var timer: Timer?
     @ObservationIgnored private var wantsCaptions = false
@@ -326,5 +321,28 @@ final class PlayerController {
             if targets != castTargets { castTargets = targets }
         }
         #endif
+    }
+}
+
+/// The drawable handed to libVLC. Keeps libVLC's render view filling it at all times.
+final class VideoHostView: UIView {
+    override init(frame: CGRect) {
+        super.init(frame: frame)
+        backgroundColor = .black
+        isUserInteractionEnabled = false
+        autoresizesSubviews = true
+    }
+
+    required init?(coder: NSCoder) { fatalError() }
+
+    override func didAddSubview(_ subview: UIView) {
+        super.didAddSubview(subview)
+        subview.frame = bounds
+        subview.autoresizingMask = [.flexibleWidth, .flexibleHeight]
+    }
+
+    override func layoutSubviews() {
+        super.layoutSubviews()
+        for sub in subviews where sub.frame != bounds { sub.frame = bounds }
     }
 }

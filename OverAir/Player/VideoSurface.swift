@@ -40,8 +40,14 @@ struct VideoSurface: UIViewRepresentable {
 
         override func layoutSubviews() {
             super.layoutSubviews()
-            player?.videoView.frame = bounds
-            player?.containerSize = bounds.size
+            guard let player, player.videoView.superview === self else { return }
+            player.videoView.frame = bounds
+            // libVLC sizes its render view once when the video output starts; keep it
+            // matched to our bounds through rotation, fold/unfold and window resizes.
+            for sub in player.videoView.subviews where sub.frame != player.videoView.bounds {
+                sub.frame = player.videoView.bounds
+            }
+            player.containerSize = bounds.size
         }
     }
 }

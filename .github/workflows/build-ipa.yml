@@ -8,23 +8,33 @@ on:
 
 jobs:
   build:
-    runs-on: macos-latest
+    runs-on: macos-26
     timeout-minutes: 60
     steps:
       - uses: actions/checkout@v4
 
       - name: Select newest Xcode
+        id: xcode
         run: |
+          echo "Installed Xcode versions:"; ls -d /Applications/Xcode*.app
           XCODE=$(ls -d /Applications/Xcode*.app | grep -v -i beta | sort -V | tail -1)
-          echo "Using $XCODE"
           sudo xcode-select -s "$XCODE"
           xcodebuild -version
+          SDK=$(xcrun --sdk iphoneos --show-sdk-version)
+          echo "iOS SDK: $SDK"
+          echo "sdk=$SDK" >> "$GITHUB_OUTPUT"
+          if [ "$(printf '%s\n' "27.1" "$SDK" | sort -V | head -1)" != "27.1" ]; then
+            echo "::warning title=Letterboxed on iPhone Duo::This runner only has the iOS $SDK SDK. Apps must be built with Xcode 27.1 (iOS 27.1 SDK) to fill the iPhone Duo's inner display. Build locally with Xcode 27.1 for the full-screen version."
+            echo "suffix=-iOS$SDK-SDK-letterboxed-on-Duo" >> "$GITHUB_OUTPUT"
+          else
+            echo "suffix=" >> "$GITHUB_OUTPUT"
+          fi
 
       - name: Build unsigned IPA
         run: ./scripts/build-unsigned-ipa.sh
 
       - uses: actions/upload-artifact@v4
         with:
-          name: OverAir-unsigned-ipa
+          name: OverAir-unsigned-ipa${{ steps.xcode.outputs.suffix }}
           path: build/OverAir-unsigned.ipa
           if-no-files-found: error

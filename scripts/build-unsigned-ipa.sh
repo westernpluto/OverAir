@@ -5,6 +5,12 @@ set -euo pipefail
 cd "$(dirname "$0")/.."
 
 DERIVED=build/DerivedData
+
+SDK_VERSION=$(xcrun --sdk iphoneos --show-sdk-version)
+if [ "$(printf '%s\n' "27.1" "$SDK_VERSION" | sort -V | head -1)" != "27.1" ]; then
+  echo "⚠️  Building with the iOS $SDK_VERSION SDK. iPhone Duo letterboxes apps built before"
+  echo "    the iOS 27.1 SDK. Select Xcode 27.1 (sudo xcode-select -s /Applications/Xcode.app) for full screen."
+fi
 mkdir -p build
 rm -rf build/Payload build/OverAir-unsigned.ipa
 
