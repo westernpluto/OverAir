@@ -66,7 +66,7 @@ struct ProgramDetailView: View {
 
     private var header: some View {
         ZStack(alignment: .bottomLeading) {
-            Artwork(url: program.imageURL ?? program.posterURL, fallbackSymbol: program.category.symbol, cornerRadius: 0)
+            Artwork(url: program.imageURL ?? program.posterURL, fallbackSymbol: program.primaryGenre?.symbol ?? "tv", cornerRadius: 0)
                 .frame(height: 260)
                 .clipped()
             LinearGradient(colors: [.clear, Theme.background], startPoint: .center, endPoint: .bottom)
@@ -75,7 +75,9 @@ struct ProgramDetailView: View {
                     if program.isAiring() { LiveBadge() }
                     if program.isNew { Pill(text: "NEW", color: .accentColor) }
                     if dvr.isScheduled(program) { Pill(text: "RECORDING", color: Theme.record, symbol: "record.circle") }
-                    Pill(text: program.category.title.uppercased(), color: Theme.color(for: program.category).opacity(0.8))
+                    ForEach(program.genres.prefix(2)) { g in
+                        Pill(text: g.name.uppercased(), color: g.color.opacity(0.8))
+                    }
                 }
                 Text(program.title).font(.largeTitle.weight(.bold)).lineLimit(3).minimumScaleFactor(0.7)
                 if let sub = program.subtitleLine { Text(sub).font(.headline).foregroundStyle(.secondary) }
@@ -167,7 +169,7 @@ struct ProgramDetailView: View {
                 detailRow("Original Air Date", Fmt.day.string(from: air))
             }
             if let ep = program.episodeNumber { detailRow("Episode", ep) }
-            if !program.filters.isEmpty { detailRow("Genres", program.filters.joined(separator: ", ")) }
+            if !program.genres.isEmpty { detailRow("Genres", program.genres.map(\.name).joined(separator: ", ")) }
             if let ch = channel {
                 detailRow("Format", [ch.isHD ? "HD" : "SD", ch.videoCodec, ch.audioCodec].compactMap { $0 }.joined(separator: " · "))
             }

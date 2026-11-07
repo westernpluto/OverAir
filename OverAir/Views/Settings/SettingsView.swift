@@ -170,10 +170,19 @@ struct AdvancedPlaybackView: View {
         @Bindable var settings = settings
         Form {
             Section {
-                Toggle("Smooth Interlaced Video", isOn: $settings.deinterlace)
-                Toggle("Hardware Decoding", isOn: $settings.hardwareDecoding)
+                Picker("Rewind Live TV Up To", selection: $settings.rewindMinutes) {
+                    Text("15 minutes").tag(15)
+                    Text("30 minutes").tag(30)
+                    Text("1 hour").tag(60)
+                    Text("2 hours").tag(120)
+                }
             } footer: {
-                Text("Most over-the-air channels are 1080i. Smoothing removes combing lines on motion.")
+                Text("Live TV is buffered on this iPhone so you can pause and rewind. Uses up to \(Fmt.bytes(settings.rewindBufferBytes)) of temporary storage while watching.")
+            }
+            Section {
+                Toggle("Smooth Interlaced Video", isOn: $settings.deinterlace)
+            } footer: {
+                Text("Most HD channels broadcast 1080i. OverAir converts it to smooth 60 fps on the GPU.")
             }
             Section {
                 Picker("Skip Back", selection: $settings.skipBackSeconds) {
@@ -184,20 +193,6 @@ struct AdvancedPlaybackView: View {
                 }
             } header: {
                 Text("Recordings")
-            }
-            Section {
-                VStack(alignment: .leading) {
-                    Text("At Home: \(String(format: "%.1f", Double(settings.liveCachingMs) / 1000)) s")
-                    Slider(value: Binding(get: { Double(settings.liveCachingMs) }, set: { settings.liveCachingMs = Int($0) }), in: 300...5000, step: 100)
-                }
-                VStack(alignment: .leading) {
-                    Text("Away From Home: \(String(format: "%.1f", Double(settings.remoteCachingMs) / 1000)) s")
-                    Slider(value: Binding(get: { Double(settings.remoteCachingMs) }, set: { settings.remoteCachingMs = Int($0) }), in: 1000...10000, step: 250)
-                }
-            } header: {
-                Text("Buffering")
-            } footer: {
-                Text("A bigger buffer reduces stutter on slow connections but makes channel changes slower.")
             }
         }
         .navigationTitle("Advanced Playback")

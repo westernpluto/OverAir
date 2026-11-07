@@ -1,0 +1,431 @@
+import Foundation
+
+/// MPEG transport stream demuxer for broadcast (ATSC 1.0 / 3.0 as delivered by HDHomeRun).
+final class TSDemuxer {
+    enum Kind: Equatable {
+        case mpeg2Video, h264, hevc
+        case ac3, eac3, ac4, aacADTS, aacLATM, mpegAudio
+        case unknown(UInt8)
+
+        var isVideo: Bool { self == .mpeg2Video || self == .h264 || self == .hevc }
+        var isAudio: Bool {
+            switch self {
+            case .ac3, .eac3, .ac4, .aacADTS, .aacLATM, .mpegAudio: return true
+            default: return false
+            }
+        }
+
+        var name: String {
+            switch self {
+            case .mpeg2Video: return "MPEG-2"
+            case .h264: return "H.264"
+            case .hevc: return "HEVC"
+            case .ac3: return "Dolby Digital"
+            case .eac3: return "Dolby Digital Plus"
+            case .ac4: return "Dolby AC-4"
+            case .aacADTS, .aacLATM: return "AAC"
+            case .mpegAudio: return "MPEG Audio"
+            case let .unknown(t): return String(format: "Type 0x%02X", t)
+            }
+        }
+    }
+
+    struct Stream: Equatable {
+        var pid: Int
+        var kind: Kind
+        var language: String?
+        /// ATSC/DVB audio service: visually impaired / description tracks are flagged so they aren't the default.
+        var isAudioDescription: Bool
+    }
+
+    struct Program: Equatable {
+        var programNumber: Int
+        var pcrPID: Int
+        var streams: [Stream]
+
+        var video: Stream? { streams.first { $0.kind.isVideo } }
+        var audio: [Stream] { streams.filter { $0.kind.isAudio } }
+    }
+
+    struct PES {
+        var pid: Int
+        var kind: Kind
+        var pts: Int64?
+        var dts: Int64?
+        var randomAccess: Bool
+        var payload: [UInt8]
+    }
+
+    var onProgram: ((Program) -> Void)?
+    var onPES: ((PES) -> Void)?
+
+    private(set) var program: Program?
+    private(set) var packetsSeen = 0
+    private(set) var continuityErrors = 0
+
+    private var remainder: [UInt8] = []
+    private var pmtPID: Int?
+    private var sections: [Int: [UInt8]] = [:]
+    private var kinds: [Int: Kind] = [:]
+
+    private final class Assembly {
+        var data: [UInt8] = []
+        var expected = 0
+        var randomAccess = false
+        var lastCC = -1
+    }
+    private var assemblies: [Int: Assembly] = [:]
+
+    func reset() {
+        remainder.removeAll()
+        sections.removeAll()
+        assemblies.removeAll()
+        // Keep the program map: channel content is unchanged on a seek.
+    }
+
+    func resetAll() {
+        reset()
+        pmtPID = nil
+        program = nil
+        kinds.removeAll()
+    }
+
+    func feed(_ bytes: UnsafeRawBufferPointer) {
+        guard let base = bytes.baseAddress?.assumingMemoryBound(to: UInt8.self) else { return }
+        var count = bytes.count
+        var ptr = base
+        if !remainder.isEmpty {
+            let need = 188 - remainder.count
+            if count < need { remainder.append(contentsOf: UnsafeBufferPointer(start: ptr, count: count)); return }
+            remainder.append(contentsOf: UnsafeBufferPointer(start: ptr, count: need))
+            ptr += need; count -= need
+            if remainder[0] == 0x47 {
+                remainder.withUnsafeBufferPointer { handlePacket($0.baseAddress!) }
+            }
+            remainder.removeAll(keepingCapacity: true)
+        }
+        var i = 0
+        while i + 188 <= count {
+            if ptr[i] != 0x47 {
+                // Resync: find the next sync byte that repeats 188 bytes later.
+                var j = i + 1
+                while j < count && !(ptr[j] == 0x47 && (j + 188 >= count || ptr[j + 188] == 0x47)) { j += 1 }
+                i = j
+                continue
+            }
+            handlePacket(ptr + i)
+            i += 188
+        }
+        if i < count { remainder.append(contentsOf: UnsafeBufferPointer(start: ptr + i, count: count - i)) }
+    }
+
+    func feed(_ data: [UInt8]) { data.withUnsafeBytes { feed($0) } }
+
+    /// Delivers any PES still being assembled (end of file).
+    func flush() {
+        for (pid, a) in assemblies where !a.data.isEmpty { deliver(pid: pid, a) }
+    }
+
+    // MARK: Packets
+
+    private func handlePacket(_ p: UnsafePointer<UInt8>) {
+        packetsSeen += 1
+        let pusi = p[1] & 0x40 != 0
+        let pid = (Int(p[1] & 0x1F) << 8) | Int(p[2])
+        let afc = (p[3] >> 4) & 0x3
+        let cc = Int(p[3] & 0x0F)
+        if pid == 0x1FFF { return }
+        var offset = 4
+        var randomAccess = false
+        if afc & 0x2 != 0 {
+            let afLen = Int(p[4])
+            if afLen > 0 { randomAccess = p[5] & 0x40 != 0 }
+            offset += 1 + afLen
+        }
+        guard afc & 0x1 != 0, offset < 188 else { return }
+        let payload = UnsafeBufferPointer(start: p + offset, count: 188 - offset)
+
+        if pid == 0 || pid == pmtPID {
+            handleSection(pid: pid, pusi: pusi, payload: payload)
+            return
+        }
+        guard let kind = kinds[pid] else { return }
+
+        let a: Assembly
+        if let existing = assemblies[pid] { a = existing } else { a = Assembly(); assemblies[pid] = a }
+        if a.lastCC >= 0 && cc != (a.lastCC + 1) & 0xF && cc != a.lastCC {
+            continuityErrors += 1
+            if !pusi { a.data.removeAll(keepingCapacity: true); a.lastCC = cc; return }
+        }
+        a.lastCC = cc
+        _ = kind
+
+        if pusi {
+            if !a.data.isEmpty { deliver(pid: pid, a) }
+            a.data.removeAll(keepingCapacity: true)
+            a.data.append(contentsOf: payload)
+            a.randomAccess = randomAccess
+            if a.data.count >= 6 {
+                let len = (Int(a.data[4]) << 8) | Int(a.data[5])
+                a.expected = len > 0 ? len + 6 : 0
+            }
+        } else {
+            guard !a.data.isEmpty else { return }
+            a.data.append(contentsOf: payload)
+        }
+        if a.expected > 0 && a.data.count >= a.expected {
+            deliver(pid: pid, a)
+            a.data.removeAll(keepingCapacity: true)
+        }
+    }
+
+    private func deliver(pid: Int, _ a: Assembly) {
+        defer { a.expected = 0 }
+        let d = a.data
+        guard d.count > 9, d[0] == 0, d[1] == 0, d[2] == 1, let kind = kinds[pid] else { return }
+        let flags = d[7]
+        let headerLen = Int(d[8])
+        var pts: Int64?, dts: Int64?
+        if flags & 0x80 != 0, d.count >= 14 { pts = Self.timestamp(d, 9) }
+        if flags & 0x40 != 0, d.count >= 19 { dts = Self.timestamp(d, 14) }
+        let start = 9 + headerLen
+        guard start < d.count else { return }
+        let end = a.expected > 0 ? min(a.expected, d.count) : d.count
+        guard start < end else { return }
+        onPES?(PES(pid: pid, kind: kind, pts: pts, dts: dts, randomAccess: a.randomAccess, payload: Array(d[start..<end])))
+    }
+
+    static func timestamp(_ d: [UInt8], _ i: Int) -> Int64 {
+        let a = Int64(d[i] >> 1) & 0x07
+        let b = (Int64(d[i + 1]) << 7) | (Int64(d[i + 2]) >> 1)
+        let c = (Int64(d[i + 3]) << 7) | (Int64(d[i + 4]) >> 1)
+        return (a << 30) | (b << 15) | c
+    }
+
+    // MARK: PSI
+
+    private func handleSection(pid: Int, pusi: Bool, payload: UnsafeBufferPointer<UInt8>) {
+        var buf = sections[pid] ?? []
+        var data = Array(payload)
+        if pusi {
+            guard let pointer = data.first else { return }
+            let start = 1 + Int(pointer)
+            if !buf.isEmpty && start > 1 { buf.append(contentsOf: data[1..<min(start, data.count)]) ; processSection(pid: pid, buf) }
+            buf = []
+            data = start < data.count ? Array(data[start...]) : []
+        } else if buf.isEmpty {
+            return
+        }
+        buf.append(contentsOf: data)
+        if buf.count >= 3 {
+            let len = ((Int(buf[1]) & 0x0F) << 8) | Int(buf[2])
+            if buf.count >= len + 3 {
+                processSection(pid: pid, Array(buf[0..<(len + 3)]))
+                buf = []
+            }
+        }
+        sections[pid] = buf
+    }
+
+    private func processSection(pid: Int, _ s: [UInt8]) {
+        guard s.count >= 8 else { return }
+        let tableID = s[0]
+        let len = ((Int(s[1]) & 0x0F) << 8) | Int(s[2])
+        let end = min(3 + len - 4, s.count) // exclude CRC
+        if pid == 0 && tableID == 0x00 {
+            var i = 8
+            while i + 4 <= end {
+                let number = (Int(s[i]) << 8) | Int(s[i + 1])
+                let mapPID = (Int(s[i + 2] & 0x1F) << 8) | Int(s[i + 3])
+                if number != 0 { if pmtPID != mapPID { pmtPID = mapPID }; break }
+                i += 4
+            }
+        } else if tableID == 0x02 {
+            parsePMT(s, end: end)
+        }
+    }
+
+    private func parsePMT(_ s: [UInt8], end: Int) {
+        guard s.count >= 12 else { return }
+        let programNumber = (Int(s[3]) << 8) | Int(s[4])
+        let pcrPID = (Int(s[8] & 0x1F) << 8) | Int(s[9])
+        let infoLen = ((Int(s[10]) & 0x0F) << 8) | Int(s[11])
+        var i = 12 + infoLen
+        var streams: [Stream] = []
+        while i + 5 <= end {
+            let type = s[i]
+            let epid = (Int(s[i + 1] & 0x1F) << 8) | Int(s[i + 2])
+            let esLen = ((Int(s[i + 3]) & 0x0F) << 8) | Int(s[i + 4])
+            let descStart = i + 5
+            let descEnd = min(descStart + esLen, end)
+            var language: String?
+            var description = false
+            var kind: Kind
+            switch type {
+            case 0x01, 0x02: kind = .mpeg2Video
+            case 0x1B: kind = .h264
+            case 0x24: kind = .hevc
+            case 0x81: kind = .ac3
+            case 0x87: kind = .eac3
+            case 0x0F: kind = .aacADTS
+            case 0x11: kind = .aacLATM
+            case 0x03, 0x04: kind = .mpegAudio
+            default: kind = .unknown(type)
+            }
+            var d = descStart
+            while d + 2 <= descEnd {
+                let tag = s[d], dlen = Int(s[d + 1])
+                let body = d + 2
+                guard body + dlen <= descEnd else { break }
+                switch tag {
+                case 0x0A where dlen >= 4:
+                    language = String(bytes: s[body..<(body + 3)], encoding: .ascii)
+                    if s[body + 3] == 0x03 { description = true } // visual impaired commentary
+                case 0x05 where dlen >= 4:
+                    let id = String(bytes: s[body..<(body + 4)], encoding: .ascii) ?? ""
+                    if id == "AC-3" && !kind.isAudio { kind = .ac3 }
+                    if id == "EAC3" && !kind.isAudio { kind = .eac3 }
+                    if id == "AC-4" { kind = .ac4 }
+                    if id == "HEVC" { kind = .hevc }
+                case 0x6A: if case .unknown = kind { kind = .ac3 }
+                case 0x7A, 0xCC: if case .unknown = kind { kind = .eac3 }
+                case 0x7F where dlen >= 1 && s[body] == 0x15: kind = .ac4 // DVB AC-4 extension descriptor
+                case 0x81 where dlen >= 3:
+                    // ATSC AC-3 audio descriptor: bsmod 2 = visually impaired, 3 = hearing impaired...
+                    let bsmod = (s[body + 1] >> 5) & 0x7
+                    if bsmod == 2 { description = true }
+                    if dlen >= 6 && language == nil {
+                        // Language code at a variable offset; best-effort.
+                    }
+                default: break
+                }
+                d = body + dlen
+            }
+            streams.append(Stream(pid: epid, kind: kind, language: language, isAudioDescription: description))
+            i = descEnd
+        }
+        let newProgram = Program(programNumber: programNumber, pcrPID: pcrPID, streams: streams)
+        if newProgram != program {
+            program = newProgram
+            kinds = [:]
+            for st in streams where st.kind.isVideo || st.kind.isAudio { kinds[st.pid] = st.kind }
+            onProgram?(newProgram)
+        }
+    }
+}
+
+// MARK: - Audio frame parsing
+
+/// Splits audio PES payloads into codec frames and works out their format.
+enum AudioFrameParser {
+    struct Frame {
+        var range: Range<Int>
+        var sampleRate: Int
+        var channels: Int
+        var samplesPerFrame: Int
+    }
+
+    static let ac3SampleRates = [48000, 44100, 32000]
+    static let ac3Bitrates = [32, 40, 48, 56, 64, 80, 96, 112, 128, 160, 192, 224, 256, 320, 384, 448, 512, 576, 640]
+    static let ac3ChannelCounts = [2, 1, 2, 3, 3, 4, 4, 5]
+
+    /// AC-3 and E-AC-3 frames (sync word 0x0B77).
+    static func dolbyFrames(_ d: [UInt8]) -> [Frame] {
+        var out: [Frame] = []
+        var i = 0
+        while i + 7 < d.count {
+            guard d[i] == 0x0B && d[i + 1] == 0x77 else { i += 1; continue }
+            let bsid = d[i + 5] >> 3
+            if bsid <= 10 {
+                let fscod = Int(d[i + 4] >> 6)
+                let frmsizecod = Int(d[i + 4] & 0x3F)
+                guard fscod < 3, frmsizecod < 38 else { i += 1; continue }
+                let kbps = ac3Bitrates[frmsizecod / 2]
+                let size: Int
+                switch fscod {
+                case 0: size = kbps * 2 * 2 // 48 kHz: words = kbps*2
+                case 1: size = (kbps * 320 / 147 + (frmsizecod & 1)) * 2
+                default: size = kbps * 3 * 2
+                }
+                let acmod = Int(d[i + 6] >> 5)
+                // lfeon follows optional mix-level fields whose presence depends on acmod.
+                var bit = 3
+                if acmod & 1 != 0 && acmod != 1 { bit += 2 }
+                if acmod & 4 != 0 { bit += 2 }
+                if acmod == 2 { bit += 2 }
+                let word = (Int(d[i + 6]) << 8) | Int(d[i + 7])
+                let lfe = (word >> (15 - bit)) & 1
+                let ch = ac3ChannelCounts[acmod] + lfe
+                guard size > 0, i + size <= d.count else { break }
+                out.append(Frame(range: i..<(i + size), sampleRate: ac3SampleRates[fscod], channels: ch, samplesPerFrame: 1536))
+                i += size
+            } else {
+                // E-AC-3
+                let frmsiz = (Int(d[i + 2] & 0x07) << 8) | Int(d[i + 3])
+                let size = (frmsiz + 1) * 2
+                let fscod = Int(d[i + 4] >> 6)
+                var rate = 48000
+                var blocks = 6
+                if fscod == 3 {
+                    let fscod2 = Int((d[i + 4] >> 4) & 0x3)
+                    rate = [24000, 22050, 16000, 48000][fscod2]
+                } else {
+                    rate = ac3SampleRates[min(fscod, 2)]
+                    blocks = [1, 2, 3, 6][Int((d[i + 4] >> 4) & 0x3)]
+                }
+                let acmod = Int((d[i + 4] >> 1) & 0x7)
+                let lfe = Int(d[i + 4] & 0x1)
+                guard size > 0, i + size <= d.count else { break }
+                out.append(Frame(range: i..<(i + size), sampleRate: rate, channels: ac3ChannelCounts[acmod] + lfe, samplesPerFrame: 256 * blocks))
+                i += size
+            }
+        }
+        return out
+    }
+
+    static let aacRates = [96000, 88200, 64000, 48000, 44100, 32000, 24000, 22050, 16000, 12000, 11025, 8000, 7350]
+
+    /// AAC ADTS frames. Returns frames whose range excludes the ADTS header, plus the AudioSpecificConfig.
+    static func adtsFrames(_ d: [UInt8]) -> (frames: [Frame], config: [UInt8]?) {
+        var out: [Frame] = []
+        var config: [UInt8]?
+        var i = 0
+        while i + 7 <= d.count {
+            guard d[i] == 0xFF && d[i + 1] & 0xF0 == 0xF0 else { i += 1; continue }
+            let protectionAbsent = d[i + 1] & 0x01
+            let profile = Int(d[i + 2] >> 6) + 1
+            let srIndex = Int((d[i + 2] >> 2) & 0x0F)
+            let channelConfig = Int(((d[i + 2] & 0x01) << 2) | (d[i + 3] >> 6))
+            let length = (Int(d[i + 3] & 0x03) << 11) | (Int(d[i + 4]) << 3) | Int(d[i + 5] >> 5)
+            let header = protectionAbsent == 1 ? 7 : 9
+            guard srIndex < aacRates.count, length > header, i + length <= d.count else { break }
+            if config == nil {
+                config = [UInt8((profile << 3) | (srIndex >> 1)), UInt8(((srIndex & 1) << 7) | (channelConfig << 3))]
+            }
+            out.append(Frame(range: (i + header)..<(i + length), sampleRate: aacRates[srIndex], channels: max(channelConfig, 1), samplesPerFrame: 1024))
+            i += length
+        }
+        return (out, config)
+    }
+
+    /// MPEG-1 Layer II audio frames.
+    static func mpegAudioFrames(_ d: [UInt8]) -> [Frame] {
+        let bitratesL2 = [0, 32, 48, 56, 64, 80, 96, 112, 128, 160, 192, 224, 256, 320, 384, 0]
+        let rates = [44100, 48000, 32000, 0]
+        var out: [Frame] = []
+        var i = 0
+        while i + 4 <= d.count {
+            guard d[i] == 0xFF && d[i + 1] & 0xE0 == 0xE0 else { i += 1; continue }
+            let br = bitratesL2[Int(d[i + 2] >> 4)]
+            let sr = rates[Int((d[i + 2] >> 2) & 0x3)]
+            let pad = Int((d[i + 2] >> 1) & 0x1)
+            guard br > 0, sr > 0 else { i += 1; continue }
+            let size = 144 * br * 1000 / sr + pad
+            guard i + size <= d.count else { break }
+            let ch = (d[i + 3] >> 6) == 3 ? 1 : 2
+            out.append(Frame(range: i..<(i + size), sampleRate: sr, channels: ch, samplesPerFrame: 1152))
+            i += size
+        }
+        return out
+    }
+}

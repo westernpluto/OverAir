@@ -20,7 +20,7 @@ struct ChannelDetailView: View {
         var title: String
         var seriesID: String?
         var imageURL: URL?
-        var category: ProgramCategory
+        var genre: Genre?
         var airings: [GuideProgram]
         var next: GuideProgram { airings[0] }
     }
@@ -36,7 +36,7 @@ struct ChannelDetailView: View {
             let sorted = list.sorted { $0.start < $1.start }
             return ShowSummary(id: key, title: sorted[0].title, seriesID: sorted[0].seriesID,
                                imageURL: sorted.first(where: { $0.imageURL != nil })?.imageURL,
-                               category: sorted[0].category, airings: sorted)
+                               genre: sorted[0].primaryGenre, airings: sorted)
         }
         .sorted { a, b in a.airings.count != b.airings.count ? a.airings.count > b.airings.count : a.next.start < b.next.start }
     }
@@ -141,7 +141,7 @@ struct ChannelDetailView: View {
 
     private func showRow(_ show: ShowSummary) -> some View {
         HStack(spacing: 12) {
-            Artwork(url: show.imageURL, fallbackSymbol: show.category.symbol, cornerRadius: 8)
+            Artwork(url: show.imageURL, fallbackSymbol: show.genre?.symbol ?? "tv", cornerRadius: 8)
                 .frame(width: 88, height: 50)
             VStack(alignment: .leading, spacing: 2) {
                 Text(show.title).font(.subheadline.weight(.semibold)).lineLimit(1)
@@ -207,8 +207,9 @@ struct ChannelDetailView: View {
                 if let sub = p.subtitleLine { Text(sub).font(.caption).foregroundStyle(.secondary).lineLimit(1) }
             }
             Spacer(minLength: 0)
-            Circle().fill(Theme.color(for: p.category)).frame(width: 8, height: 8).padding(.top, 6)
-                .opacity(p.category == .show ? 0 : 1)
+            if let g = p.primaryGenre {
+                Circle().fill(g.color).frame(width: 8, height: 8).padding(.top, 6)
+            }
         }
         .contentShape(Rectangle())
     }

@@ -23,12 +23,11 @@ enum PlaybackItem: Equatable {
 }
 
 /// Central place that starts/stops playback. The player view stays mounted for as long as
-/// something is playing; "minimising" only hides it, so the video surface is never torn down
-/// or moved between views (which is what made channel changes hang before).
+/// something is playing; "minimising" only hides it.
 @MainActor
 @Observable
 final class PlaybackCoordinator {
-    let player = PlayerController()
+    let player = TVPlayer()
     private(set) var item: PlaybackItem?
     /// Full-screen player visible (vs. minimised to the mini player).
     var isExpanded = false
@@ -89,12 +88,16 @@ final class PlaybackCoordinator {
         Haptics.tap(settings)
 
         tuneTask?.cancel()
-        let options = options(captions: settings.closedCaptionsByDefault || player.captionsOn)
+        var options = TVPlayer.Options()
+        options.captions = settings.closedCaptionsByDefault || player.captionsEnabled
+        if wasSurfing { player.stop() } // release the old tuner right away
         tuneTask = Task { [weak self] in
             if wasSurfing { try? await Task.sleep(nanoseconds: 450_000_000) }
             guard !Task.isCancelled, let self else { return }
-            self.player.play(url: url, options: options)
             self.activateAudioSession()
+            self.player.timeshiftCapacity = self.settings.rewindBufferBytes
+            self.player.deinterlace = self.settings.deinterlace
+            self.player.playLive(url: url, options: options)
             self.updateNowPlaying()
         }
     }
@@ -104,10 +107,12 @@ final class PlaybackCoordinator {
         saveResumeIfNeeded()
         tuneTask?.cancel()
         item = .recording(episode)
-        var opts = options(captions: settings.closedCaptionsByDefault)
+        var opts = TVPlayer.Options()
+        opts.captions = settings.closedCaptionsByDefault
+        opts.duration = episode.duration
         opts.startAt = fromStart ? nil : episode.resumeSeconds.map(Double.init)
-        player.play(url: url, options: opts)
         activateAudioSession()
+        player.playRecording(url: url, options: opts)
         updateNowPlaying()
         isExpanded = true
     }
@@ -116,11 +121,12 @@ final class PlaybackCoordinator {
         saveResumeIfNeeded()
         tuneTask?.cancel()
         item = .local(local)
-        var opts = options(captions: settings.closedCaptionsByDefault)
-        opts.cachingMs = 300
+        var opts = TVPlayer.Options()
+        opts.captions = settings.closedCaptionsByDefault
+        opts.duration = local.ended.map { $0.timeIntervalSince(local.started) }
         opts.startAt = fromStart ? nil : local.resumeSeconds
-        player.play(url: local.fileURL, options: opts)
         activateAudioSession()
+        player.playRecording(url: local.fileURL, options: opts)
         updateNowPlaying()
         isExpanded = true
     }
@@ -132,15 +138,6 @@ final class PlaybackCoordinator {
         case let .local(rec)?: play(rec)
         case nil: break
         }
-    }
-
-    private func options(captions: Bool) -> PlayerController.Options {
-        var o = PlayerController.Options()
-        o.cachingMs = tuners.connection == .remote ? settings.remoteCachingMs : settings.liveCachingMs
-        o.deinterlace = settings.deinterlace
-        o.hardwareDecoding = settings.hardwareDecoding
-        o.captions = captions
-        return o
     }
 
     // MARK: Control
@@ -196,8 +193,8 @@ final class PlaybackCoordinator {
     }
 
     private func saveResumeIfNeeded() {
-        guard let item, player.duration > 0 else { return }
-        let t = player.currentTime
+        guard let item, !player.isLive, player.duration > 0 else { return }
+        let t = player.position
         let nearEnd = player.duration - t < 60
         switch item {
         case let .recording(ep):

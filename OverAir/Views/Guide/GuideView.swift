@@ -10,7 +10,7 @@ struct GuideView: View {
     @Environment(PlaybackCoordinator.self) private var playback
     @Environment(\.horizontalSizeClass) private var hSize
 
-    @State private var category: ProgramCategory = .all
+    @State private var highlight: Genre?
     @State private var favoritesOnly = false
     @State private var position = ScrollPosition(idType: Int.self)
     @State private var viewport = CGRect(x: 0, y: 0, width: 400, height: 800)
@@ -19,7 +19,8 @@ struct GuideView: View {
     @State private var didInitialScroll = false
 
     private var pointsPerMinute: CGFloat { hSize == .regular ? 6.5 : 5 }
-    private var rowHeight: CGFloat { settings.guideRowHeight }
+    @ScaledMetric(relativeTo: .footnote) private var rowScale: CGFloat = 1
+    private var rowHeight: CGFloat { settings.guideRowHeight * min(max(rowScale, 0.9), 1.6) }
     private var channelColumnWidth: CGFloat { hSize == .regular ? 128 : 84 }
     private let headerHeight: CGFloat = 34
 
@@ -131,37 +132,51 @@ struct GuideView: View {
         }
     }
 
+    /// Genres in the guide, most common first — used to highlight shows.
+    private var guideGenres: [Genre] {
+        var counts: [Genre: Int] = [:]
+        let now = Date()
+        for ch in guide.channels {
+            for p in ch.programs where p.end > now { for g in p.genres { counts[g, default: 0] += 1 } }
+        }
+        return counts.sorted { $0.value != $1.value ? $0.value > $1.value : $0.key.name < $1.key.name }.map(\.key)
+    }
+
     private var filterBar: some View {
         ScrollView(.horizontal, showsIndicators: false) {
             HStack(spacing: 8) {
-                Button {
-                    withAnimation(.snappy) { favoritesOnly.toggle() }
-                } label: {
-                    Label("Favorites", systemImage: favoritesOnly ? "star.fill" : "star")
-                        .font(.footnote.weight(.semibold))
-                        .padding(.horizontal, 10).padding(.vertical, 6)
-                        .background(favoritesOnly ? AnyShapeStyle(Color.yellow.opacity(0.35)) : AnyShapeStyle(Theme.card), in: Capsule())
+                chip(title: "Favorites", symbol: favoritesOnly ? "star.fill" : "star", on: favoritesOnly) {
+                    favoritesOnly.toggle()
                 }
-                .buttonStyle(.plain)
-                ForEach(ProgramCategory.allCases.filter { $0 != .show }) { cat in
-                    Button {
-                        withAnimation(.snappy) { category = cat }
-                    } label: {
-                        HStack(spacing: 5) {
-                            if cat != .all { Circle().fill(Theme.color(for: cat)).frame(width: 8, height: 8) }
-                            Text(cat == .all ? "Everything" : cat.title)
-                        }
-                        .font(.footnote.weight(.semibold))
-                        .padding(.horizontal, 10).padding(.vertical, 6)
-                        .background(category == cat ? AnyShapeStyle(Color.accentColor.opacity(0.85)) : AnyShapeStyle(Theme.card), in: Capsule())
-                        .foregroundStyle(category == cat ? .white : .primary)
+                Divider().frame(height: 18)
+                ForEach(guideGenres) { g in
+                    chip(title: g.name, dot: g.color, on: highlight == g) {
+                        highlight = highlight == g ? nil : g
                     }
-                    .buttonStyle(.plain)
                 }
             }
             .padding(.horizontal)
         }
+        .scrollClipDisabled()
         .padding(.vertical, 8)
+    }
+
+    private func chip(title: String, symbol: String? = nil, dot: Color? = nil, on: Bool, action: @escaping () -> Void) -> some View {
+        Button {
+            withAnimation(.snappy) { action() }
+        } label: {
+            HStack(spacing: 5) {
+                if let symbol { Image(systemName: symbol).imageScale(.small) }
+                if let dot { Circle().fill(dot).frame(width: 8, height: 8) }
+                Text(title)
+            }
+            .font(.footnote.weight(.semibold))
+            .padding(.horizontal, 10).padding(.vertical, 6)
+            .background(on ? AnyShapeStyle(Color.accentColor) : AnyShapeStyle(Theme.card), in: Capsule())
+            .foregroundStyle(on ? .white : .primary)
+        }
+        .buttonStyle(.plain)
+        .accessibilityAddTraits(on ? .isSelected : [])
     }
 
     private var tipBanner: some View {
@@ -242,7 +257,7 @@ struct GuideView: View {
                 viewportMinX: viewport.minX,
                 viewportWidth: viewport.width,
                 now: now,
-                category: category,
+                highlight: highlight,
                 xFor: { x(for: $0) },
                 isScheduled: { dvr.isScheduled($0) },
                 onSelect: { selected = $0 },
@@ -374,7 +389,7 @@ struct GuideRowCells: View {
     var viewportMinX: CGFloat
     var viewportWidth: CGFloat
     var now: Date
-    var category: ProgramCategory
+    var highlight: Genre?
     var xFor: (Date) -> CGFloat
     var isScheduled: (GuideProgram) -> Bool
     var onSelect: (GuideProgram) -> Void
@@ -399,7 +414,7 @@ struct GuideRowCells: View {
         let x0 = max(xFor(p.start), 0)
         let width = max(xFor(p.end) - x0, 8)
         let pinned = max(0, viewportMinX - (leadingX + x0))
-        return ProgramCell(program: p, now: now, highlighted: category == .all || p.category == category,
+        return ProgramCell(program: p, now: now, highlighted: highlight == nil || p.genres.contains(highlight!),
                            scheduled: isScheduled(p), pinnedLeading: min(pinned, max(width - 60, 0)))
             .frame(width: width - 2, height: rowHeight - 2)
             .offset(x: leadingX + x0 + 1, y: rowY + 1)
@@ -429,12 +444,13 @@ struct ProgramCell: View {
                 }
                 .clipShape(RoundedRectangle(cornerRadius: 8, style: .continuous))
             }
-            Rectangle()
-                .fill(Theme.color(for: program.category))
-                .frame(width: 3)
-                .clipShape(RoundedRectangle(cornerRadius: 2))
-                .padding(.vertical, 6)
-                .opacity(program.category == .show ? 0 : 1)
+            if let g = program.primaryGenre {
+                Rectangle()
+                    .fill(g.color)
+                    .frame(width: 3)
+                    .clipShape(RoundedRectangle(cornerRadius: 2))
+                    .padding(.vertical, 6)
+            }
 
             VStack(alignment: .leading, spacing: 2) {
                 HStack(spacing: 4) {

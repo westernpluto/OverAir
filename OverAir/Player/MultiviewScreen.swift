@@ -8,7 +8,7 @@ struct MultiviewScreen: View {
     @Environment(GuideStore.self) private var guide
     @Environment(AppSettings.self) private var settings
 
-    @State private var players: [PlayerController] = []
+    @State private var players: [TVPlayer] = []
     @State private var channels: [Channel?] = []
     @State private var audioIndex = 0
     @State private var pickingSlot: Int?
@@ -18,10 +18,10 @@ struct MultiviewScreen: View {
     var body: some View {
         GeometryReader { proxy in
             let division = Fold.division(in: proxy)
-            let content = CGRect(x: 0, y: 56, width: proxy.size.width, height: max(proxy.size.height - 56 - 40, 100))
+            let top: CGFloat = 56, bottom: CGFloat = 34
+            let content = CGRect(x: 0, y: top, width: proxy.size.width, height: max(proxy.size.height - top - bottom, 100))
             let frames = TileLayout.frames(count: channels.count, in: content, avoiding: division)
             ZStack(alignment: .topLeading) {
-                Color.black
                 ForEach(Array(frames.enumerated()), id: \.offset) { i, frame in
                     if i < channels.count {
                         tile(i)
@@ -29,12 +29,13 @@ struct MultiviewScreen: View {
                             .position(x: frame.midX, y: frame.midY)
                     }
                 }
-                topBar.frame(width: proxy.size.width, height: 56)
+                topBar.frame(width: proxy.size.width, height: top)
                 hint
-                    .frame(width: proxy.size.width, height: 40)
-                    .offset(y: proxy.size.height - 40)
+                    .frame(width: proxy.size.width, height: bottom)
+                    .offset(y: proxy.size.height - bottom)
             }
         }
+        .background(Color.black.ignoresSafeArea())
         .preferredColorScheme(.dark)
         .statusBarHidden(true)
         .onAppear(perform: setup)
@@ -54,30 +55,29 @@ struct MultiviewScreen: View {
                 Label("Done", systemImage: "xmark")
                     .font(.subheadline.weight(.semibold))
                     .padding(.horizontal, 14).padding(.vertical, 9)
-                    .background(.ultraThinMaterial, in: Capsule())
+                    .glass(in: Capsule())
             }
             Spacer()
             Text("Multiview").font(.headline)
             Spacer()
             if channels.count < maxSlots {
                 Button { addSlot() } label: {
-                    Label("Add Channel", systemImage: "plus")
+                    Label("Add", systemImage: "plus")
                         .font(.subheadline.weight(.semibold))
                         .padding(.horizontal, 14).padding(.vertical, 9)
-                        .background(.ultraThinMaterial, in: Capsule())
+                        .glass(in: Capsule())
                 }
             } else {
-                Text("\(maxSlots) of \(maxSlots)").font(.caption).foregroundStyle(.secondary).frame(minWidth: 110, alignment: .trailing)
+                Text("\(maxSlots) of \(maxSlots)").font(.caption).foregroundStyle(.secondary)
             }
         }
         .buttonStyle(.plain)
         .foregroundStyle(.white)
         .padding(.horizontal, 16)
-        .safeAreaPadding(.horizontal)
     }
 
     private var hint: some View {
-        Text("Tap a screen to hear it · Double-tap for full screen · Press and hold for options")
+        Text("Tap to hear · Double-tap for full screen · Hold for options")
             .font(.caption)
             .foregroundStyle(.white.opacity(0.6))
             .multilineTextAlignment(.center)
@@ -89,7 +89,7 @@ struct MultiviewScreen: View {
         ZStack(alignment: .bottomLeading) {
             Color(white: 0.07)
             if i < players.count, channels[i] != nil {
-                VideoSurface(player: players[i])
+                TVVideoView(player: players[i])
             }
             if let ch = channels[i] {
                 HStack(spacing: 6) {
@@ -102,7 +102,7 @@ struct MultiviewScreen: View {
                 .background(.black.opacity(0.6), in: Capsule())
                 .padding(8)
                 .foregroundStyle(.white)
-                if i < players.count, players[i].state.isLoading {
+                if i < players.count, players[i].state.isLoading || players[i].state == .idle {
                     ProgressView().tint(.white).frame(maxWidth: .infinity, maxHeight: .infinity)
                 }
             } else {
@@ -144,37 +144,44 @@ struct MultiviewScreen: View {
         if initial.isEmpty { initial = Array(tuners.favoriteChannels.prefix(2)).map { Optional($0) } }
         if initial.count < 2 { initial += Array(repeating: nil, count: 2 - initial.count) }
         channels = Array(initial.prefix(maxSlots))
-        players = channels.map { _ in PlayerController() }
+        players = channels.map { _ in TVPlayer() }
         for i in channels.indices { start(i) }
         selectAudio(0)
     }
 
     private func start(_ i: Int) {
         guard let ch = channels[i], let url = tuners.streamURL(for: ch) else { return }
-        var opts = PlayerController.Options()
-        opts.cachingMs = tuners.connection == .remote ? settings.remoteCachingMs : settings.liveCachingMs
-        opts.deinterlace = settings.deinterlace
+        let p = players[i]
+        p.timeshiftCapacity = 64_000_000 // tiles only need a small buffer
+        p.aspect = .fit
+        p.lowPower = i != audioIndex
+        p.audioEnabled = i == audioIndex
+        var opts = TVPlayer.Options()
         opts.muted = i != audioIndex
-        players[i].aspect = .fit
-        players[i].play(url: url, options: opts)
+        p.playLive(url: url, options: opts)
     }
 
     private func selectAudio(_ i: Int) {
         guard channels[safe: i] != nil, channels[i] != nil else { return }
         audioIndex = i
-        for (idx, p) in players.enumerated() { p.isMuted = idx != i }
+        for (idx, p) in players.enumerated() {
+            let focused = idx == i
+            p.lowPower = !focused
+            p.audioEnabled = focused
+            p.isMuted = !focused
+        }
     }
 
     private func assign(_ ch: Channel, to i: Int) {
         guard i < channels.count else { return }
         channels[i] = ch
         start(i)
-        if channels.compactMap({ $0 }).count == 1 { selectAudio(i) } else { players[i].isMuted = i != audioIndex }
+        if channels.compactMap({ $0 }).count == 1 { selectAudio(i) } else { selectAudio(audioIndex) }
     }
 
     private func addSlot() {
         channels.append(nil)
-        players.append(PlayerController())
+        players.append(TVPlayer())
         pickingSlot = channels.count - 1
     }
 

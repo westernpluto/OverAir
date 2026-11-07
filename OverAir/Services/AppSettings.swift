@@ -118,6 +118,10 @@ final class AppSettings {
     var homePublicIP: String? { didSet { defaults.set(homePublicIP, forKey: "homePublicIP") } }
     var homePublicIPUpdated: Date? { didSet { defaults.set(homePublicIPUpdated, forKey: "homePublicIPUpdated") } }
     var playerTipsSeen: Bool { didSet { defaults.set(playerTipsSeen, forKey: "playerTips") } }
+    /// Minutes of live TV kept on disk for pause / rewind.
+    var rewindMinutes: Int { didSet { defaults.set(rewindMinutes, forKey: "rewindMinutes") } }
+    /// Roughly 80 MB per minute covers a full-bitrate HD channel.
+    var rewindBufferBytes: Int64 { Int64(max(rewindMinutes, 5)) * 80_000_000 }
     var guideTipsSeen: Bool { didSet { defaults.set(guideTipsSeen, forKey: "guideTips") } }
 
     init(defaults: UserDefaults = .standard) {
@@ -156,6 +160,7 @@ final class AppSettings {
         homePublicIP = defaults.string(forKey: "homePublicIP")
         homePublicIPUpdated = defaults.object(forKey: "homePublicIPUpdated") as? Date
         playerTipsSeen = bool("playerTips", false)
+        rewindMinutes = int("rewindMinutes", 30)
         guideTipsSeen = bool("guideTips", false)
     }
 

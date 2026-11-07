@@ -6,10 +6,6 @@
 	objectVersion = 77;
 	objects = {
 
-/* Begin PBXBuildFile section */
-		4FFC0533AD8F056D002818DF /* VLCKitSPM in Frameworks */ = {isa = PBXBuildFile; productRef = 960546F9E0A4AB1FD1428711 /* VLCKitSPM */; };
-/* End PBXBuildFile section */
-
 /* Begin PBXFileReference section */
 		81918909E83595C8F4212CCC /* OverAir.app */ = {isa = PBXFileReference; explicitFileType = wrapper.application; includeInIndex = 0; path = OverAir.app; sourceTree = BUILT_PRODUCTS_DIR; };
 		D1D74ED74759DFE7FCFB113A /* Info.plist */ = {isa = PBXFileReference; lastKnownFileType = text.plist.xml; path = Info.plist; sourceTree = "<group>"; };
@@ -28,7 +24,6 @@
 			isa = PBXFrameworksBuildPhase;
 			buildActionMask = 2147483647;
 			files = (
-				4FFC0533AD8F056D002818DF /* VLCKitSPM in Frameworks */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
@@ -79,9 +74,6 @@
 				C2215A2DE72462B1D3833CC4 /* OverAir */,
 			);
 			name = OverAir;
-			packageProductDependencies = (
-				960546F9E0A4AB1FD1428711 /* VLCKitSPM */,
-			);
 			productName = OverAir;
 			productReference = 81918909E83595C8F4212CCC /* OverAir.app */;
 			productType = "com.apple.product-type.application";
@@ -110,9 +102,6 @@
 			);
 			mainGroup = 8D3FC6DB5D0827F168A73277;
 			minimizedProjectReferenceProxies = 1;
-			packageReferences = (
-				DCE6DCD9CBEDFFC71950EF11 /* XCRemoteSwiftPackageReference "vlckit-spm" */,
-			);
 			preferredProjectObjectVersion = 77;
 			productRefGroup = 1BADDC1D73C1A20F347483E1 /* Products */;
 			projectDirPath = "";
@@ -293,24 +282,6 @@
 		};
 /* End XCConfigurationList section */
 
-/* Begin XCRemoteSwiftPackageReference section */
-		DCE6DCD9CBEDFFC71950EF11 /* XCRemoteSwiftPackageReference "vlckit-spm" */ = {
-			isa = XCRemoteSwiftPackageReference;
-			repositoryURL = "https://github.com/tylerjonesio/vlckit-spm";
-			requirement = {
-				kind = exactVersion;
-				version = 3.6.0;
-			};
-		};
-/* End XCRemoteSwiftPackageReference section */
-
-/* Begin XCSwiftPackageProductDependency section */
-		960546F9E0A4AB1FD1428711 /* VLCKitSPM */ = {
-			isa = XCSwiftPackageProductDependency;
-			package = DCE6DCD9CBEDFFC71950EF11 /* XCRemoteSwiftPackageReference "vlckit-spm" */;
-			productName = VLCKitSPM;
-		};
-/* End XCSwiftPackageProductDependency section */
 	};
 	rootObject = 46F86FAA6BBF9AC94A7E4595 /* Project object */;
 }

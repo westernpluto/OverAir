@@ -1,15 +1,12 @@
 import SwiftUI
 
 enum PlayerSheet: String, Identifiable {
-    case keypad, info, cast
+    case keypad, info, streamInfo
     var id: String { rawValue }
 }
 
 /// The full-screen player. It stays mounted while anything plays (minimising just hides it).
-///
-/// On iPhone Duo it uses an overlay ArrangementView: on a flat display the controls float over
-/// the video; when the device is partially folded, video sits on one half and the controls on
-/// the other, always visible.
+/// On iPhone Duo an overlay ArrangementView puts the controls beside the picture when partially folded.
 struct PlayerOverlay: View {
     @Environment(PlaybackCoordinator.self) private var playback
     @Environment(TunerStore.self) private var tuners
@@ -23,7 +20,7 @@ struct PlayerOverlay: View {
     @State private var toast: String?
     @State private var dragOffset: CGFloat = 0
 
-    private var player: PlayerController { playback.player }
+    private var player: TVPlayer { playback.player }
 
     var body: some View {
         GeometryReader { proxy in
@@ -48,13 +45,13 @@ struct PlayerOverlay: View {
         .offset(y: max(0, dragOffset))
         .preferredColorScheme(.dark)
         .statusBarHidden(playback.isExpanded && !controlsVisible)
-        .persistentSystemOverlays(playback.isExpanded ? .hidden : .automatic)
-        .onChange(of: playback.isExpanded) { _, expanded in
-            if expanded { showControls() }
-        }
+        .persistentSystemOverlays(playback.isExpanded && !controlsVisible ? .hidden : .automatic)
+        .onChange(of: playback.isExpanded) { _, expanded in if expanded { showControls() } }
         .onChange(of: playback.currentChannel) { _, _ in scheduleHide() }
         .onChange(of: player.state) { _, state in
-            if state == .playing { scheduleHide() } else if case .failed = state { showControls(autoHide: false) }
+            if state == .playing { scheduleHide() }
+            if case .failed = state { showControls(autoHide: false) }
+            if state == .paused { showControls(autoHide: false) }
         }
         .task(id: playback.isExpanded ? playback.currentChannel?.number : nil) { await pollSignal() }
         .sheet(item: $sheet) { which in
@@ -71,8 +68,8 @@ struct PlayerOverlay: View {
                 } else {
                     Text("No program information.").presentationDetents([.fraction(0.25)])
                 }
-            case .cast:
-                CastSheet().presentationDetents([.medium])
+            case .streamInfo:
+                StreamInfoSheet().presentationDetents([.medium, .large])
             }
         }
     }
@@ -82,20 +79,23 @@ struct PlayerOverlay: View {
     private func videoArea(separated: Bool) -> some View {
         ZStack {
             Color.black
-            VideoSurface(player: player)
+            TVVideoView(player: player)
+            CaptionOverlay(rows: player.captionRows, raised: controlsVisible && !separated)
             PlayerStatusView(controlsVisible: controlsVisible && !separated)
             if let banner = playback.channelBanner, !(controlsVisible || separated) {
                 ChannelBanner(channel: banner)
                     .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
-                    .padding(24)
+                    .padding(20)
                     .transition(.opacity)
             }
         }
         .ignoresSafeArea()
         .contentShape(Rectangle())
-        .onTapGesture {
-            if controlsVisible { hideControls() } else { showControls() }
+        .onTapGesture(count: 2) {
+            playback.setAspect(player.aspect == .fit ? .fill : .fit)
+            flash(player.aspect == .fill ? "Fill Screen" : "Fit to Screen")
         }
+        .onTapGesture { if controlsVisible { hideControls() } else { showControls() } }
         .gesture(swipeGesture)
         .simultaneousGesture(
             MagnifyGesture().onEnded { value in
@@ -129,8 +129,8 @@ struct PlayerOverlay: View {
                         if dx < 0 { playback.channelUp() } else { playback.channelDown() }
                     } else {
                         let s = dx < 0 ? settings.skipForwardSeconds : -settings.skipBackSeconds
-                        player.skip(by: s)
-                        flash(s > 0 ? "Forward \(s)s" : "Back \(-s)s")
+                        player.skip(by: Double(s))
+                        flash(s > 0 ? "Forward \(s) s" : "Back \(-s) s")
                     }
                 }
             }
@@ -144,7 +144,7 @@ struct PlayerOverlay: View {
             Text(toast)
                 .font(.subheadline.weight(.semibold))
                 .padding(.horizontal, 16).padding(.vertical, 10)
-                .background(.ultraThinMaterial, in: Capsule())
+                .glass(in: Capsule(), interactive: false)
                 .padding(.top, 56)
                 .transition(.move(edge: .top).combined(with: .opacity))
                 .allowsHitTesting(false)
@@ -177,16 +177,14 @@ struct PlayerOverlay: View {
     private func scheduleHide() {
         hideTask?.cancel()
         hideTask = Task {
-            try? await Task.sleep(nanoseconds: 5_000_000_000)
+            try? await Task.sleep(nanoseconds: 4_500_000_000)
             guard !Task.isCancelled else { return }
-            if player.state == .playing && !showChannels && sheet == nil {
-                hideControls()
-            }
+            if player.state == .playing && !showChannels && sheet == nil { hideControls() }
         }
     }
 
     private func pollSignal() async {
-        guard playback.isExpanded, playback.item?.isLive == true, settings.showSignalOverlay else { return }
+        guard playback.isExpanded, playback.item?.isLive == true else { return }
         while !Task.isCancelled {
             await tuners.refreshStatus()
             try? await Task.sleep(nanoseconds: 3_000_000_000)
@@ -204,6 +202,8 @@ struct PlayerControls: View {
     @Environment(LocalRecorder.self) private var recorder
     @Environment(AppSettings.self) private var settings
     @Environment(\.verticalSizeClass) private var vSize
+    @ScaledMetric(relativeTo: .title) private var playSize: CGFloat = 68
+    @ScaledMetric(relativeTo: .title) private var skipSize: CGFloat = 50
 
     var visible: Bool
     var separated: Bool
@@ -212,10 +212,9 @@ struct PlayerControls: View {
     var flash: (String) -> Void
     var poke: () -> Void
 
-    @State private var scrub: Double?
-
-    private var player: PlayerController { playback.player }
+    private var player: TVPlayer { playback.player }
     private var isLive: Bool { playback.item?.isLive ?? true }
+    private var compactHeight: Bool { vSize == .compact }
 
     var body: some View {
         ZStack {
@@ -223,10 +222,10 @@ struct PlayerControls: View {
                 Color.black
             } else {
                 LinearGradient(stops: [
-                    .init(color: .black.opacity(0.75), location: 0),
-                    .init(color: .clear, location: 0.28),
-                    .init(color: .clear, location: 0.55),
-                    .init(color: .black.opacity(0.85), location: 1)
+                    .init(color: .black.opacity(0.7), location: 0),
+                    .init(color: .clear, location: 0.25),
+                    .init(color: .clear, location: 0.5),
+                    .init(color: .black.opacity(0.85), location: 1),
                 ], startPoint: .top, endPoint: .bottom)
                 .ignoresSafeArea()
                 .allowsHitTesting(false)
@@ -238,11 +237,11 @@ struct PlayerControls: View {
                 if !isFailed { transport }
                 Spacer(minLength: 8)
                 bottomPanel
-                    .frame(maxWidth: 680)
+                    .frame(maxWidth: 760)
             }
             .padding(.horizontal, 16)
-            .padding(.top, 6)
-            .padding(.bottom, 10)
+            .padding(.top, 4)
+            .padding(.bottom, compactHeight ? 6 : 12)
         }
         .foregroundStyle(.white)
         .opacity(visible ? 1 : 0)
@@ -254,135 +253,82 @@ struct PlayerControls: View {
         return false
     }
 
-    // MARK: Top bar
+    // MARK: Top
 
     private var topBar: some View {
-        HStack(alignment: .center, spacing: 12) {
-            Button {
-                playback.isExpanded = false
-            } label: {
-                Label("Minimize", systemImage: "chevron.down")
-                    .labelStyle(.iconOnly)
-                    .font(.system(size: 17, weight: .semibold))
-                    .frame(width: 42, height: 42)
-                    .background(.ultraThinMaterial, in: Circle())
-            }
-            .buttonStyle(.plain)
-
-            NowPlayingTitle()
-
-            Spacer(minLength: 8)
-
-            if settings.showSignalOverlay, let ch = playback.currentChannel, let s = tuners.status(forChannel: ch.number) {
+        HStack(spacing: 10) {
+            GlassIconButton(title: "Minimize", symbol: "chevron.down") { playback.isExpanded = false }
+            Spacer()
+            if let ch = playback.currentChannel, settings.showSignalOverlay, let s = tuners.status(forChannel: ch.number) {
                 HStack(spacing: 6) {
                     SignalBars(percent: s.signalStrength)
                     Text("\(s.signalQuality ?? 0)%").font(.caption2.monospacedDigit())
                 }
                 .padding(.horizontal, 10).padding(.vertical, 8)
-                .background(.ultraThinMaterial, in: Capsule())
-                .accessibilityLabel("Signal quality \(s.signalQuality ?? 0) percent")
+                .glass(in: Capsule(), interactive: false)
             }
-
+            if player.isPictureInPicturePossible {
+                GlassIconButton(title: "Picture in Picture", symbol: player.isPictureInPictureActive ? "pip.exit" : "pip.enter") {
+                    player.togglePictureInPicture()
+                }
+            }
             RoutePicker()
-                .frame(width: 42, height: 42)
-                .background(.ultraThinMaterial, in: Circle())
+                .frame(width: 44, height: 44)
+                .glass(in: Circle())
                 .accessibilityLabel("AirPlay")
         }
     }
 
     // MARK: Transport
 
-    @ViewBuilder
     private var transport: some View {
-        if isLive {
-            HStack(spacing: 18) {
-                adjacentChannelButton(offset: -1)
-                Spacer(minLength: 0)
-                playPauseButton
-                Spacer(minLength: 0)
-                adjacentChannelButton(offset: 1)
-            }
-            .frame(maxWidth: 520)
-        } else {
-            HStack(spacing: 40) {
-                transportButton("Back \(settings.skipBackSeconds) seconds", symbol: "gobackward.\(settings.skipBackSeconds)") {
-                    player.skip(by: -settings.skipBackSeconds); poke()
-                }
-                playPauseButton
-                transportButton("Forward \(settings.skipForwardSeconds) seconds", symbol: "goforward.\(settings.skipForwardSeconds)") {
-                    player.skip(by: settings.skipForwardSeconds); poke()
-                }
-            }
-        }
-    }
-
-    private var playPauseButton: some View {
-        Button {
-            player.togglePause()
-            poke()
-        } label: {
-            ZStack {
-                if player.state.isLoading {
-                    ProgressView().controlSize(.large).tint(.white)
-                } else {
-                    Image(systemName: player.state == .paused ? "play.fill" : "pause.fill")
-                        .font(.system(size: 32, weight: .bold))
-                }
-            }
-            .frame(width: 76, height: 76)
-            .background(.ultraThinMaterial, in: Circle())
-        }
-        .buttonStyle(.plain)
-        .accessibilityLabel(player.state == .paused ? "Play" : "Pause")
-    }
-
-    private func transportButton(_ title: String, symbol: String, action: @escaping () -> Void) -> some View {
-        Button(action: action) {
-            Label(title, systemImage: symbol)
-                .labelStyle(.iconOnly)
-                .font(.system(size: 26, weight: .semibold))
-                .frame(width: 58, height: 58)
-                .background(.ultraThinMaterial, in: Circle())
-        }
-        .buttonStyle(.plain)
-    }
-
-    /// Clearly labelled previous/next channel buttons showing where they'll take you.
-    @ViewBuilder
-    private func adjacentChannelButton(offset: Int) -> some View {
-        if let ch = playback.nextChannel(offset: offset) {
+        HStack(spacing: compactHeight ? 36 : 44) {
+            skipButton(seconds: -Double(isLive ? 10 : settings.skipBackSeconds))
             Button {
-                if offset > 0 { playback.channelUp() } else { playback.channelDown() }
+                player.togglePause()
                 poke()
             } label: {
-                HStack(spacing: 8) {
-                    if offset < 0 { Image(systemName: "chevron.left").font(.headline) }
-                    VStack(alignment: offset < 0 ? .leading : .trailing, spacing: 1) {
-                        Text(ch.number).font(.subheadline.weight(.bold).monospacedDigit())
-                        Text(ch.name).font(.caption2).foregroundStyle(.white.opacity(0.75)).lineLimit(1)
+                ZStack {
+                    if player.state.isLoading {
+                        ProgressView().controlSize(.large).tint(.white)
+                    } else {
+                        Image(systemName: player.state == .paused ? "play.fill" : "pause.fill")
+                            .font(.system(size: playSize * 0.42, weight: .bold))
                     }
-                    if offset > 0 { Image(systemName: "chevron.right").font(.headline) }
                 }
-                .padding(.horizontal, 12)
-                .frame(minWidth: 96, minHeight: 52)
-                .background(.ultraThinMaterial, in: RoundedRectangle(cornerRadius: 16, style: .continuous))
+                .frame(width: playSize, height: playSize)
+                .glass(in: Circle())
             }
             .buttonStyle(.plain)
-            .accessibilityLabel("\(offset > 0 ? "Next" : "Previous") channel, \(ch.number) \(ch.name)")
-        } else {
-            Color.clear.frame(width: 96, height: 52)
+            .accessibilityLabel(player.state == .paused ? "Play" : "Pause")
+            skipButton(seconds: Double(isLive ? 10 : settings.skipForwardSeconds))
+                .disabled(isLive && player.isAtLiveEdge)
+                .opacity(isLive && player.isAtLiveEdge ? 0.35 : 1)
         }
+    }
+
+    private func skipButton(seconds: Double) -> some View {
+        let s = Int(abs(seconds))
+        let symbol = seconds < 0 ? "gobackward.\(s)" : "goforward.\(s)"
+        return Button {
+            player.skip(by: seconds)
+            poke()
+        } label: {
+            Image(systemName: symbol)
+                .font(.system(size: skipSize * 0.44, weight: .semibold))
+                .frame(width: skipSize, height: skipSize)
+                .glass(in: Circle())
+        }
+        .buttonStyle(.plain)
+        .accessibilityLabel(seconds < 0 ? "Back \(s) seconds" : "Forward \(s) seconds")
     }
 
     // MARK: Bottom
 
     private var bottomPanel: some View {
-        VStack(spacing: 12) {
-            if isLive {
-                LiveProgressInfo()
-            } else {
-                scrubber
-            }
+        VStack(alignment: .leading, spacing: compactHeight ? 8 : 12) {
+            NowPlayingTitle()
+            if isLive { LiveTimeline(poke: poke) } else { RecordingScrubber(poke: poke) }
             if showChannels && isLive {
                 ChannelStrip { ch in
                     playback.play(ch)
@@ -394,66 +340,21 @@ struct PlayerControls: View {
         }
     }
 
-    private var scrubber: some View {
-        VStack(spacing: 4) {
-            Slider(value: Binding(get: { scrub ?? player.currentTime }, set: { scrub = $0 }),
-                   in: 0...max(player.duration, 1)) { editing in
-                if !editing, let s = scrub { player.seek(to: s); scrub = nil }
-                poke()
-            }
-            .tint(.white)
-            HStack {
-                Text(Fmt.clock(scrub ?? player.currentTime))
-                Spacer()
-                Text("-" + Fmt.clock(max(0, player.duration - (scrub ?? player.currentTime))))
-            }
-            .font(.caption.monospacedDigit())
-            .foregroundStyle(.white.opacity(0.8))
-        }
-    }
-
     private var actionBar: some View {
-        HStack(spacing: 4) {
+        HStack(spacing: 8) {
             if isLive {
-                ActionButton(title: "Channels", symbol: "list.bullet.rectangle", active: showChannels) {
+                ActionButton(title: "Channels", symbol: "list.bullet", active: showChannels) {
                     withAnimation(.snappy) { showChannels.toggle() }
                     poke()
                 }
             }
-            ActionButton(title: "Captions", symbol: player.captionsOn ? "captions.bubble.fill" : "captions.bubble", active: player.captionsOn) {
+            ActionButton(title: "Captions", symbol: player.captionsEnabled ? "captions.bubble.fill" : "captions.bubble",
+                         active: player.captionsEnabled) {
                 player.toggleCaptions()
-                flash(player.captionsOn ? "Captions on" : "Captions off")
+                flash(player.captionsEnabled ? (player.hasCaptions ? "Captions on" : "Captions on — none on this channel yet") : "Captions off")
                 poke()
             }
-            Menu {
-                if player.audioTracks.isEmpty {
-                    Text("Only one audio track")
-                }
-                ForEach(player.audioTracks) { t in
-                    Button { player.selectAudio(t) } label: {
-                        if t.id == player.selectedAudio { Label(t.name, systemImage: "checkmark") } else { Text(t.name) }
-                    }
-                }
-                Divider()
-                Button { player.isMuted.toggle() } label: {
-                    Label(player.isMuted ? "Unmute" : "Mute", systemImage: player.isMuted ? "speaker.wave.2" : "speaker.slash")
-                }
-            } label: {
-                ActionLabel(title: "Audio", symbol: player.isMuted ? "speaker.slash" : "speaker.wave.2", active: player.isMuted)
-            }
-            if isLive {
-                recordMenu
-            } else {
-                Menu {
-                    Picker("Speed", selection: Binding(get: { Double(player.rate) }, set: { player.rate = Float($0) })) {
-                        ForEach([0.75, 1.0, 1.25, 1.5, 2.0], id: \.self) { r in
-                            Text(r == 1 ? "Normal" : String(format: "%.2g×", r)).tag(r)
-                        }
-                    }
-                } label: {
-                    ActionLabel(title: "Speed", symbol: "gauge.with.dots.needle.67percent", active: player.rate != 1)
-                }
-            }
+            if isLive { recordMenu }
             moreMenu
         }
         .menuOrder(.fixed)
@@ -465,21 +366,21 @@ struct PlayerControls: View {
         let recordingHere = ch.map { recorder.isRecording(channel: $0.number) } ?? false
         return Menu {
             if let program, program.seriesID != nil, !tuners.storageDevices.isEmpty {
-                Section("Save to HDHomeRun storage") {
-                    Button { recordDVR(program, mode: .once) } label: { Label("Record “\(program.title)”", systemImage: "record.circle") }
-                    Button { recordDVR(program, mode: .series) } label: { Label("Record Every Episode", systemImage: "square.stack.3d.down.right") }
+                Section("Save to HDHomeRun") {
+                    Button { recordDVR(program, mode: .once) } label: { Label("This Episode", systemImage: "record.circle") }
+                    Button { recordDVR(program, mode: .series) } label: { Label("Every Episode", systemImage: "square.stack.3d.down.right") }
                 }
             }
-            Section("Save to this iPhone") {
+            Section("Save to This iPhone") {
                 if recordingHere, let ch {
                     Button(role: .destructive) {
                         for a in recorder.active.values where a.recording.channelNumber == ch.number { recorder.stop(a.id) }
-                        flash("Recording saved to iPhone")
+                        flash("Saved to iPhone")
                     } label: { Label("Stop Recording", systemImage: "stop.circle") }
                 } else if let ch {
                     if let program {
                         Button { recordLocal(ch, until: program.end.addingTimeInterval(TimeInterval(settings.endPaddingSeconds))) } label: {
-                            Label("Until “\(program.title)” Ends", systemImage: "iphone.and.arrow.forward")
+                            Label("Until the Show Ends", systemImage: "iphone.and.arrow.forward")
                         }
                     }
                     Button { recordLocal(ch, until: nil) } label: { Label("Until I Stop It", systemImage: "iphone") }
@@ -493,25 +394,47 @@ struct PlayerControls: View {
 
     private var moreMenu: some View {
         Menu {
-            Section("Picture") {
-                Picker("Picture Size", selection: Binding(get: { player.aspect }, set: { playback.setAspect($0) })) {
-                    ForEach(AspectMode.allCases) { m in Label(m.title, systemImage: m.symbol).tag(m) }
+            Section {
+                Picker("Picture", selection: Binding(get: { player.aspect }, set: { playback.setAspect($0) })) {
+                    Label("Fit", systemImage: "rectangle.arrowtriangle.2.inward").tag(AspectMode.fit)
+                    Label("Fill", systemImage: "rectangle.arrowtriangle.2.outward").tag(AspectMode.fill)
+                }
+                if player.audioTracks.count > 1 || player.audioTracks.contains(where: { !$0.supported }) {
+                    Picker("Audio", selection: Binding(get: { player.selectedAudio ?? -1 }, set: { pid in
+                        if let t = player.audioTracks.first(where: { $0.id == pid }) { player.selectAudio(t) }
+                    })) {
+                        ForEach(player.audioTracks) { t in
+                            Text(t.supported ? t.title : "\(t.title) — not supported").tag(t.id)
+                        }
+                    }
+                    .pickerStyle(.menu)
+                }
+                Button { player.isMuted.toggle() } label: {
+                    Label(player.isMuted ? "Unmute" : "Mute", systemImage: player.isMuted ? "speaker.wave.2" : "speaker.slash")
+                }
+                if !isLive {
+                    Picker("Speed", selection: Binding(get: { Double(player.rate) }, set: { player.rate = Float($0) })) {
+                        ForEach([0.75, 1.0, 1.25, 1.5, 2.0], id: \.self) { r in
+                            Text(r == 1 ? "Normal Speed" : String(format: "%.2g×", r)).tag(r)
+                        }
+                    }
+                    .pickerStyle(.menu)
                 }
             }
             if let ch = playback.currentChannel {
-                Section("Channel") {
+                Section {
                     Button { settings.toggleFavorite(ch.number); flash(settings.isFavorite(ch.number) ? "Added to Favorites" : "Removed from Favorites") } label: {
                         Label(settings.isFavorite(ch.number) ? "Remove from Favorites" : "Add to Favorites",
                               systemImage: settings.isFavorite(ch.number) ? "star.slash" : "star")
                     }
                     if playback.hasPreviousChannel {
-                        Button { playback.lastChannel() } label: { Label("Back to Previous Channel", systemImage: "arrow.uturn.backward") }
+                        Button { playback.lastChannel() } label: { Label("Previous Channel", systemImage: "arrow.uturn.backward") }
                     }
                     Button { sheet = .keypad } label: { Label("Enter Channel Number", systemImage: "number") }
-                    Button { sheet = .info } label: { Label("About This Program", systemImage: "info.circle") }
                     Button { playback.openMultiview(with: Array(tuners.favoriteChannels.prefix(3))) } label: {
-                        Label("Multiview (Watch Several)", systemImage: "rectangle.split.2x2")
+                        Label("Multiview", systemImage: "rectangle.split.2x2")
                     }
+                    Button { sheet = .info } label: { Label("About This Show", systemImage: "info.circle") }
                 }
             }
             Section {
@@ -526,15 +449,15 @@ struct PlayerControls: View {
                         }
                     }
                     if playback.sleepTimerEnd != nil {
-                        Button("Turn Off Sleep Timer", role: .destructive) { playback.cancelSleepTimer() }
+                        Button("Turn Off", role: .destructive) { playback.cancelSleepTimer() }
                     }
                 } label: {
-                    Label(playback.sleepTimerEnd.map { "Sleep Timer (\(Fmt.time.string(from: $0)))" } ?? "Sleep Timer", systemImage: "moon.zzz")
+                    Label(playback.sleepTimerEnd.map { "Sleep Timer · \(Fmt.time.string(from: $0))" } ?? "Sleep Timer", systemImage: "moon.zzz")
                 }
-                Button { sheet = .cast } label: { Label("Cast to Chromecast", systemImage: "tv.and.mediabox") }
+                Button { sheet = .streamInfo } label: { Label("Stream & Signal Info", systemImage: "waveform.path.ecg") }
             }
         } label: {
-            ActionLabel(title: "More", symbol: "ellipsis.circle", active: false)
+            ActionLabel(title: "More", symbol: "ellipsis", active: false)
         }
     }
 
@@ -561,7 +484,27 @@ struct PlayerControls: View {
     }
 }
 
-/// Icon + title, so every control says what it does.
+// MARK: - Pieces
+
+struct GlassIconButton: View {
+    var title: String
+    var symbol: String
+    var action: () -> Void
+    @ScaledMetric private var size: CGFloat = 44
+
+    var body: some View {
+        Button(action: action) {
+            Image(systemName: symbol)
+                .font(.system(size: size * 0.4, weight: .semibold))
+                .frame(width: size, height: size)
+                .glass(in: Circle())
+        }
+        .buttonStyle(.plain)
+        .accessibilityLabel(title)
+    }
+}
+
+/// Icon above a short title, so every control says what it does.
 struct ActionLabel: View {
     var title: String
     var symbol: String
@@ -569,18 +512,18 @@ struct ActionLabel: View {
     var activeColor: Color = .accentColor
 
     var body: some View {
-        VStack(spacing: 4) {
+        VStack(spacing: 3) {
             Image(systemName: symbol)
-                .font(.system(size: 19, weight: .semibold))
+                .font(.body.weight(.semibold))
                 .foregroundStyle(active ? activeColor : .white)
-                .frame(height: 22)
             Text(title)
                 .font(.caption2.weight(.semibold))
                 .lineLimit(1)
-                .minimumScaleFactor(0.8)
+                .minimumScaleFactor(0.75)
         }
-        .frame(maxWidth: .infinity, minHeight: 50)
-        .background(.ultraThinMaterial, in: RoundedRectangle(cornerRadius: 14, style: .continuous))
+        .frame(maxWidth: .infinity, minHeight: 48)
+        .padding(.vertical, 2)
+        .glass(in: RoundedRectangle(cornerRadius: 16, style: .continuous))
         .contentShape(Rectangle())
     }
 }
@@ -603,24 +546,28 @@ struct NowPlayingTitle: View {
     @Environment(GuideStore.self) private var guide
     @Environment(TunerStore.self) private var tuners
     @Environment(LocalRecorder.self) private var recorder
+    @ScaledMetric private var logoSize: CGFloat = 40
 
     var body: some View {
-        HStack(spacing: 10) {
+        HStack(spacing: 12) {
             if let ch = playback.currentChannel {
-                ChannelLogo(url: guide.logo(ch.number), number: ch.number, name: ch.name, size: 38)
+                ChannelLogo(url: guide.logo(ch.number), number: ch.number, name: ch.name, size: logoSize)
             }
             VStack(alignment: .leading, spacing: 2) {
-                HStack(spacing: 6) {
-                    if playback.item?.isLive == true { LiveBadge() }
-                    if let ch = playback.currentChannel, recorder.isRecording(channel: ch.number) {
-                        Pill(text: "REC", color: Theme.record, symbol: "record.circle")
-                    }
-                    if tuners.connection == .remote { Pill(text: "AWAY", color: .cyan.opacity(0.6), symbol: "globe") }
-                }
                 Text(title).font(.headline).lineLimit(1)
-                if let subtitle { Text(subtitle).font(.caption).foregroundStyle(.white.opacity(0.75)).lineLimit(1) }
+                HStack(spacing: 6) {
+                    if let subtitle { Text(subtitle).lineLimit(1) }
+                    if let ch = playback.currentChannel, recorder.isRecording(channel: ch.number) {
+                        Pill(text: "REC", color: Theme.record)
+                    }
+                    if tuners.connection == .remote { Pill(text: "AWAY", color: .cyan.opacity(0.5)) }
+                }
+                .font(.caption)
+                .foregroundStyle(.white.opacity(0.75))
             }
+            Spacer(minLength: 0)
         }
+        .accessibilityElement(children: .combine)
     }
 
     private var title: String {
@@ -642,29 +589,115 @@ struct NowPlayingTitle: View {
     }
 }
 
-struct LiveProgressInfo: View {
+/// Live timeline: the rewindable buffer, where you are in it, and a LIVE button.
+struct LiveTimeline: View {
     @Environment(PlaybackCoordinator.self) private var playback
     @Environment(GuideStore.self) private var guide
+    var poke: () -> Void
+    @State private var dragFraction: Double?
+
+    private var player: TVPlayer { playback.player }
 
     var body: some View {
-        NowTicker(interval: 15) { now in
-            if let ch = playback.currentChannel, let p = guide.nowPlaying(ch.number, at: now) {
-                VStack(alignment: .leading, spacing: 6) {
-                    HStack {
-                        Text(Fmt.range(p.start, p.end)).font(.caption.monospacedDigit())
-                        Spacer()
-                        Text(Fmt.remaining(until: p.end)).font(.caption)
+        HStack(spacing: 12) {
+            VStack(alignment: .leading, spacing: 6) {
+                GeometryReader { geo in
+                    let available = max(player.timeshiftAvailable, 1)
+                    let fraction = dragFraction ?? (player.isAtLiveEdge ? 1 : min(max(player.position / available, 0), 1))
+                    ZStack(alignment: .leading) {
+                        Capsule().fill(Color.white.opacity(0.18))
+                        Capsule().fill(Color.white.opacity(0.85)).frame(width: max(4, geo.size.width * fraction))
                     }
-                    .foregroundStyle(.white.opacity(0.85))
-                    ProgressLine(value: p.progress(at: now), tint: Theme.live, height: 4)
-                    if let next = guide.upNext(ch.number, at: now) {
-                        Text("Next at \(Fmt.time.string(from: next.start)): \(next.title)")
-                            .font(.caption).foregroundStyle(.white.opacity(0.7)).lineLimit(1)
-                            .frame(maxWidth: .infinity, alignment: .leading)
+                    .frame(height: 5)
+                    .frame(maxHeight: .infinity)
+                    .contentShape(Rectangle())
+                    .gesture(DragGesture(minimumDistance: 0)
+                        .onChanged { v in dragFraction = min(max(v.location.x / geo.size.width, 0), 1); poke() }
+                        .onEnded { _ in
+                            if let f = dragFraction { player.seek(to: f * available) }
+                            dragFraction = nil
+                        })
+                }
+                .frame(height: 22)
+                HStack {
+                    if let ch = playback.currentChannel, let p = guide.nowPlaying(ch.number) {
+                        Text(Fmt.range(p.start, p.end))
+                    }
+                    Spacer()
+                    if !player.isAtLiveEdge {
+                        Text("−" + Fmt.clock(player.behindLive)).monospacedDigit()
                     }
                 }
+                .font(.caption2)
+                .foregroundStyle(.white.opacity(0.75))
+            }
+            Button {
+                player.goLive()
+                poke()
+            } label: {
+                HStack(spacing: 5) {
+                    Circle().fill(player.isAtLiveEdge ? Theme.live : .white.opacity(0.5)).frame(width: 7, height: 7)
+                    Text("LIVE").font(.caption.weight(.heavy))
+                }
+                .padding(.horizontal, 12).padding(.vertical, 8)
+                .glass(in: Capsule())
+            }
+            .buttonStyle(.plain)
+            .disabled(player.isAtLiveEdge)
+            .accessibilityLabel(player.isAtLiveEdge ? "Watching live" : "Jump to live")
+        }
+    }
+}
+
+struct RecordingScrubber: View {
+    @Environment(PlaybackCoordinator.self) private var playback
+    var poke: () -> Void
+    @State private var scrub: Double?
+
+    private var player: TVPlayer { playback.player }
+
+    var body: some View {
+        VStack(spacing: 4) {
+            Slider(value: Binding(get: { scrub ?? player.position }, set: { scrub = $0 }),
+                   in: 0...max(player.duration, 1)) { editing in
+                if !editing, let s = scrub { player.seek(to: s); scrub = nil }
+                poke()
+            }
+            .tint(.white)
+            HStack {
+                Text(Fmt.clock(scrub ?? player.position))
+                Spacer()
+                Text("−" + Fmt.clock(max(0, player.duration - (scrub ?? player.position))))
+            }
+            .font(.caption2.monospacedDigit())
+            .foregroundStyle(.white.opacity(0.75))
+        }
+    }
+}
+
+/// Closed captions drawn over the picture.
+struct CaptionOverlay: View {
+    var rows: [CEA608Decoder.Row]
+    var raised: Bool
+
+    var body: some View {
+        VStack(spacing: 2) {
+            Spacer()
+            ForEach(rows) { row in
+                Text(row.text)
+                    .font(.system(.title3, design: .rounded).weight(.semibold))
+                    .italic(row.italic)
+                    .foregroundStyle(.white)
+                    .padding(.horizontal, 8).padding(.vertical, 2)
+                    .background(.black.opacity(0.75), in: RoundedRectangle(cornerRadius: 4))
             }
         }
+        .multilineTextAlignment(.center)
+        .padding(.horizontal, 24)
+        .padding(.bottom, raised ? 190 : 36)
+        .animation(.easeOut(duration: 0.2), value: raised)
+        .allowsHitTesting(false)
+        .accessibilityElement(children: .combine)
     }
 }
 
@@ -689,10 +722,6 @@ struct PlayerStatusView: View {
             VStack(spacing: 14) {
                 Image(systemName: "exclamationmark.triangle.fill").font(.largeTitle).foregroundStyle(.yellow)
                 Text(message).multilineTextAlignment(.center).font(.callout).foregroundStyle(.white)
-                if let ch = playback.currentChannel, ch.isATSC3 {
-                    Text("This is an ATSC 3.0 channel. Some stations use DRM or AC-4 audio that third-party apps can't decode.")
-                        .font(.footnote).foregroundStyle(.white.opacity(0.7)).multilineTextAlignment(.center)
-                }
                 HStack(spacing: 12) {
                     Button { playback.retry() } label: { Label("Try Again", systemImage: "arrow.clockwise") }
                         .buttonStyle(.borderedProminent)
@@ -704,7 +733,7 @@ struct PlayerStatusView: View {
             }
             .padding(28)
             .frame(maxWidth: 440)
-            .background(.ultraThinMaterial, in: RoundedRectangle(cornerRadius: 22, style: .continuous))
+            .glass(in: RoundedRectangle(cornerRadius: 24, style: .continuous), interactive: false)
             .padding()
         case .ended where playback.item?.isLive == false:
             VStack(spacing: 12) {
@@ -733,7 +762,7 @@ struct ChannelBanner: View {
             }
         }
         .padding(12)
-        .background(.ultraThinMaterial, in: RoundedRectangle(cornerRadius: 16, style: .continuous))
+        .glass(in: RoundedRectangle(cornerRadius: 18, style: .continuous), interactive: false)
         .foregroundStyle(.white)
     }
 }
@@ -747,10 +776,10 @@ struct PlayerTips: View {
             Color.black.opacity(0.55).ignoresSafeArea()
             VStack(alignment: .leading, spacing: 16) {
                 Text("Watching Live TV").font(.title3.weight(.bold))
-                tip("hand.tap", "Tap the picture to show or hide the controls.")
-                tip("hand.draw", "Swipe left or right on the picture to change channels.")
-                tip("chevron.down", "Swipe down, or tap the arrow, to keep watching while you browse.")
-                tip("list.bullet.rectangle", "Tap Channels to see what's on everywhere else.")
+                tip("hand.tap", "Tap the picture to show or hide controls.")
+                tip("hand.draw", "Swipe left or right to change channels.")
+                tip("pause.circle", "Pause and rewind live TV — it keeps recording while you're paused.")
+                tip("chevron.down", "Swipe down to keep watching while you browse.")
                 Button {
                     withAnimation { settings.playerTipsSeen = true }
                 } label: {
@@ -760,10 +789,9 @@ struct PlayerTips: View {
             }
             .padding(24)
             .frame(maxWidth: 380)
-            .background(.regularMaterial, in: RoundedRectangle(cornerRadius: 24, style: .continuous))
+            .background(.regularMaterial, in: RoundedRectangle(cornerRadius: 28, style: .continuous))
             .padding()
         }
-        .foregroundStyle(.primary)
     }
 
     private func tip(_ symbol: String, _ text: String) -> some View {
@@ -779,6 +807,7 @@ struct ChannelStrip: View {
     @Environment(TunerStore.self) private var tuners
     @Environment(GuideStore.self) private var guide
     @Environment(PlaybackCoordinator.self) private var playback
+    @ScaledMetric private var cardWidth: CGFloat = 150
     var onSelect: (Channel) -> Void
 
     var body: some View {
@@ -787,21 +816,21 @@ struct ChannelStrip: View {
                 LazyHStack(spacing: 10) {
                     ForEach(tuners.visibleChannels) { ch in
                         Button { onSelect(ch) } label: {
-                            VStack(alignment: .leading, spacing: 5) {
+                            VStack(alignment: .leading, spacing: 6) {
                                 HStack(spacing: 6) {
-                                    ChannelLogo(url: guide.logo(ch.number), number: ch.number, name: ch.name, size: 28)
+                                    ChannelLogo(url: guide.logo(ch.number), number: ch.number, name: ch.name, size: 26)
                                     Text(ch.number).font(.caption.weight(.bold).monospacedDigit())
-                                    Spacer(minLength: 0)
                                 }
                                 Text(guide.nowPlaying(ch.number)?.title ?? ch.name)
-                                    .font(.caption.weight(.semibold)).lineLimit(2)
+                                    .font(.caption.weight(.semibold))
+                                    .lineLimit(2)
                                     .multilineTextAlignment(.leading)
-                                Spacer(minLength: 0)
+                                    .frame(maxWidth: .infinity, alignment: .leading)
                                 if let p = guide.nowPlaying(ch.number) { ProgressLine(value: p.progress(), tint: Theme.live, height: 2) }
                             }
                             .padding(10)
-                            .frame(width: 148, height: 96)
-                            .background(playback.currentChannel == ch ? AnyShapeStyle(Color.accentColor.opacity(0.4)) : AnyShapeStyle(.ultraThinMaterial),
+                            .frame(width: cardWidth)
+                            .background(playback.currentChannel == ch ? AnyShapeStyle(Color.accentColor.opacity(0.45)) : AnyShapeStyle(Color.white.opacity(0.1)),
                                         in: RoundedRectangle(cornerRadius: 14, style: .continuous))
                         }
                         .buttonStyle(.plain)
@@ -809,10 +838,59 @@ struct ChannelStrip: View {
                     }
                 }
             }
-            .frame(height: 96)
+            .fixedSize(horizontal: false, vertical: true)
             .onAppear { if let c = playback.currentChannel { proxy.scrollTo(c.number, anchor: .center) } }
         }
         .foregroundStyle(.white)
+    }
+}
+
+struct StreamInfoSheet: View {
+    @Environment(PlaybackCoordinator.self) private var playback
+    @Environment(TunerStore.self) private var tuners
+    @Environment(\.dismiss) private var dismiss
+
+    var body: some View {
+        let info = playback.player.info
+        NavigationStack {
+            List {
+                Section("Video") {
+                    LabeledContent("Codec", value: info.videoCodec ?? "—")
+                    LabeledContent("Resolution", value: info.width > 0 ? "\(info.width)×\(info.height) (\(info.resolutionLabel))" : "—")
+                    if info.frameRate > 0 { LabeledContent("Frame Rate", value: String(format: "%.2f fps", info.frameRate)) }
+                    if info.interlaced { LabeledContent("Deinterlacing", value: info.deinterlacing ? "On (60 fps)" : "Off") }
+                }
+                Section("Audio") {
+                    LabeledContent("Codec", value: info.audioCodec ?? "—")
+                    LabeledContent("Channels", value: info.channelLabel)
+                    if info.sampleRate > 0 { LabeledContent("Sample Rate", value: "\(info.sampleRate / 1000) kHz") }
+                }
+                Section("Stream") {
+                    LabeledContent("Bitrate", value: info.mbps > 0 ? String(format: "%.1f Mbps", info.mbps) : "—")
+                    if playback.player.isLive {
+                        LabeledContent("Rewind Available", value: Fmt.clock(playback.player.timeshiftAvailable))
+                    }
+                    LabeledContent("Connection", value: tuners.connection.title)
+                }
+                if let ch = playback.currentChannel, let s = tuners.status(forChannel: ch.number) {
+                    Section("Signal") {
+                        SignalMeter(label: "Strength", value: s.signalStrength)
+                        SignalMeter(label: "Quality", value: s.signalQuality)
+                        SignalMeter(label: "Symbol Quality", value: s.symbolQuality)
+                        if let f = s.frequency { LabeledContent("Frequency", value: String(format: "%.1f MHz", Double(f) / 1_000_000)) }
+                    }
+                }
+            }
+            .navigationTitle("Stream Info")
+            .navigationBarTitleDisplayMode(.inline)
+            .toolbar { ToolbarItem(placement: .confirmationAction) { Button("Done") { dismiss() } } }
+        }
+        .task {
+            while !Task.isCancelled {
+                await tuners.refreshStatus()
+                try? await Task.sleep(nanoseconds: 2_000_000_000)
+            }
+        }
     }
 }
 
@@ -824,11 +902,13 @@ struct KeypadSheet: View {
     private let keys = ["1", "2", "3", "4", "5", "6", "7", "8", "9", ".", "0", "⌫"]
 
     var body: some View {
-        VStack(spacing: 18) {
+        VStack(spacing: 16) {
             Text(entry.isEmpty ? "Channel Number" : entry)
-                .font(.system(size: entry.isEmpty ? 24 : 40, weight: .bold, design: .rounded).monospacedDigit())
+                .font(entry.isEmpty ? .title2 : .largeTitle)
+                .fontWeight(.bold)
+                .monospacedDigit()
                 .foregroundStyle(entry.isEmpty ? .secondary : .primary)
-                .frame(height: 50)
+                .frame(minHeight: 50)
             LazyVGrid(columns: Array(repeating: GridItem(.flexible(), spacing: 12), count: 3), spacing: 12) {
                 ForEach(keys, id: \.self) { k in
                     Button {
@@ -836,7 +916,7 @@ struct KeypadSheet: View {
                         if k == "⌫" { if !entry.isEmpty { entry.removeLast() } } else if entry.count < 7 { entry.append(k) }
                     } label: {
                         Text(k).font(.title.weight(.semibold))
-                            .frame(maxWidth: .infinity, minHeight: 54)
+                            .frame(maxWidth: .infinity, minHeight: 52)
                             .background(Theme.card, in: RoundedRectangle(cornerRadius: 14, style: .continuous))
                     }
                     .buttonStyle(.plain)
@@ -847,45 +927,11 @@ struct KeypadSheet: View {
                 onSubmit(entry)
                 dismiss()
             } label: {
-                Text("Watch Channel").font(.headline).frame(maxWidth: .infinity, minHeight: 50)
+                Text("Watch").font(.headline).frame(maxWidth: .infinity, minHeight: 50)
             }
             .buttonStyle(.borderedProminent)
             .disabled(entry.isEmpty)
         }
         .padding(24)
-    }
-}
-
-struct CastSheet: View {
-    @Environment(PlaybackCoordinator.self) private var playback
-    @Environment(\.dismiss) private var dismiss
-
-    var body: some View {
-        NavigationStack {
-            List {
-                Section {
-                    if playback.player.castTargets.isEmpty {
-                        HStack(spacing: 12) { ProgressView(); Text("Looking for Chromecast devices…").foregroundStyle(.secondary) }
-                    }
-                    ForEach(playback.player.castTargets) { t in
-                        Button {
-                            playback.player.cast(to: t)
-                            dismiss()
-                        } label: {
-                            Label(t.name, systemImage: playback.player.activeCast == t ? "checkmark.circle.fill" : "tv")
-                        }
-                    }
-                } footer: {
-                    Text("Sends this channel to a Chromecast or Google TV on your Wi-Fi. For Apple TV, use the AirPlay button for sound.")
-                }
-                if playback.player.activeCast != nil {
-                    Button("Stop Casting", role: .destructive) { playback.player.cast(to: nil); dismiss() }
-                }
-            }
-            .navigationTitle("Cast")
-            .navigationBarTitleDisplayMode(.inline)
-            .toolbar { ToolbarItem(placement: .confirmationAction) { Button("Done") { dismiss() } } }
-        }
-        .onAppear { playback.player.startCastDiscovery() }
     }
 }

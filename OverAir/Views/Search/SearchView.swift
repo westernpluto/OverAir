@@ -32,32 +32,45 @@ struct SearchView: View {
             NavigationStack { ProgramDetailView(program: p) }
                 .presentationDetents([.medium, .large])
         }
-        .navigationDestination(for: ProgramCategory.self) { cat in CategoryListingView(category: cat) }
+        .navigationDestination(for: Genre.self) { g in CategoryListingView(genre: g) }
         .navigationDestination(for: Channel.self) { ch in ChannelDetailView(channel: ch) }
     }
 
     // MARK: Browse (empty query)
 
+    private var browseGenres: [(genre: Genre, count: Int)] {
+        var counts: [Genre: Int] = [:]
+        let now = Date()
+        for ch in guide.channels {
+            for p in ch.programs where p.end > now { for g in p.genres { counts[g, default: 0] += 1 } }
+        }
+        return counts.map { ($0.key, $0.value) }.sorted { $0.count != $1.count ? $0.count > $1.count : $0.genre.name < $1.genre.name }
+    }
+
     @ViewBuilder
     private var browseSections: some View {
         Section {
-            ForEach([ProgramCategory.movie, .sports, .news, .kids]) { cat in
-                NavigationLink(value: cat) {
+            if browseGenres.isEmpty {
+                Text(guide.isLoading ? "Loading listings…" : "Genres appear once the guide has loaded.")
+                    .foregroundStyle(.secondary)
+            }
+            ForEach(browseGenres, id: \.genre) { item in
+                NavigationLink(value: item.genre) {
                     Label {
-                        VStack(alignment: .leading, spacing: 2) {
-                            Text("\(cat.title) Coming Up").font(.body.weight(.medium))
-                            Text("\(guide.channels.flatMap(\.programs).filter { $0.category == cat && $0.end > Date() }.count) in the guide")
-                                .font(.caption).foregroundStyle(.secondary)
+                        HStack {
+                            Text(item.genre.name)
+                            Spacer()
+                            Text("\(item.count)").foregroundStyle(.secondary).monospacedDigit()
                         }
                     } icon: {
-                        Image(systemName: cat.symbol).foregroundStyle(Theme.color(for: cat))
+                        Image(systemName: item.genre.symbol).foregroundStyle(item.genre.color)
                     }
                 }
             }
         } header: {
-            Text("Browse")
+            Text("Browse by Genre")
         } footer: {
-            Text("Search for a show, movie, sports team or channel. You can watch, set a reminder, or record every future episode.")
+            Text("Search for a show, movie, team or channel to watch it, get a reminder, or record every future episode.")
         }
     }
 
@@ -93,7 +106,7 @@ struct SearchView: View {
                 ForEach(airings, id: \.first.id) { group in
                     Button { selected = group.first } label: {
                         HStack(spacing: 12) {
-                            Artwork(url: group.first.imageURL, fallbackSymbol: group.first.category.symbol, cornerRadius: 8)
+                            Artwork(url: group.first.imageURL, fallbackSymbol: group.first.primaryGenre?.symbol ?? "tv", cornerRadius: 8)
                                 .frame(width: 84, height: 47)
                             VStack(alignment: .leading, spacing: 2) {
                                 HStack(spacing: 6) {
@@ -208,19 +221,19 @@ struct SearchView: View {
     }
 }
 
-/// Upcoming movies / sports / news / kids programs across all channels.
+/// Everything coming up in one genre across all channels.
 struct CategoryListingView: View {
     @Environment(GuideStore.self) private var guide
     @Environment(DVRStore.self) private var dvr
     @Environment(TunerStore.self) private var tuners
-    var category: ProgramCategory
+    var genre: Genre
     @State private var selected: GuideProgram?
 
     private var programs: [GuideProgram] {
         let now = Date()
         let visible = Set(tuners.visibleChannels.map(\.number))
         return guide.channels.flatMap(\.programs)
-            .filter { $0.category == category && $0.end > now && visible.contains($0.channelNumber) }
+            .filter { $0.end > now && visible.contains($0.channelNumber) && $0.genres.contains(genre) }
             .sorted { $0.start < $1.start }
     }
 
@@ -236,8 +249,8 @@ struct CategoryListingView: View {
             }
         }
         .listStyle(.plain)
-        .overlay { if programs.isEmpty { ContentUnavailableView("Nothing Coming Up", systemImage: category.symbol) } }
-        .navigationTitle(category.title)
+        .overlay { if programs.isEmpty { ContentUnavailableView("Nothing Coming Up", systemImage: genre.symbol) } }
+        .navigationTitle(genre.name)
         .sheet(item: $selected) { p in
             NavigationStack { ProgramDetailView(program: p) }
                 .presentationDetents([.medium, .large])
