@@ -5,6 +5,10 @@ on:
     branches: [ "claude/**" ]
   workflow_dispatch:
 
+concurrency:
+  group: screenshots-${{ github.ref }}
+  cancel-in-progress: true
+
 jobs:
   screenshots:
     runs-on: xcode-27

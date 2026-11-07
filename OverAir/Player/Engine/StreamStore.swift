@@ -91,8 +91,11 @@ final class StreamStore: @unchecked Sendable {
             let pos = (from + Int64(done)) % capacity
             let n = Swift.min(count - done, Int(capacity - pos))
             try? handle.seek(toOffset: UInt64(pos))
-            if let chunk = try? handle.read(upToCount: n) {
-                chunk.copyBytes(to: &out[done], count: chunk.count)
+            if let chunk = try? handle.read(upToCount: n), !chunk.isEmpty {
+                let start = done
+                out.withUnsafeMutableBytes { raw in
+                    _ = chunk.copyBytes(to: UnsafeMutableRawBufferPointer(rebasing: raw[start..<(start + chunk.count)]))
+                }
                 done += chunk.count
                 if chunk.count < n { break }
             } else {

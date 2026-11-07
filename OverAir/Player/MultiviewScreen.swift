@@ -1,4 +1,5 @@
 import SwiftUI
+import AVFoundation
 
 /// Watch up to four channels at once — one per FLEX 4K tuner.
 /// Every tile shows the whole 16:9 picture (never cropped); tiles stay clear of the fold.
@@ -140,6 +141,9 @@ struct MultiviewScreen: View {
     // MARK: Logic
 
     private func setup() {
+        let session = AVAudioSession.sharedInstance()
+        try? session.setCategory(.playback, mode: .moviePlayback)
+        try? session.setActive(true)
         var initial: [Channel?] = playback.multiviewChannels.map { Optional($0) }
         if initial.isEmpty { initial = Array(tuners.favoriteChannels.prefix(2)).map { Optional($0) } }
         if initial.count < 2 { initial += Array(repeating: nil, count: 2 - initial.count) }
@@ -153,6 +157,7 @@ struct MultiviewScreen: View {
         guard let ch = channels[i], let url = tuners.streamURL(for: ch) else { return }
         let p = players[i]
         p.timeshiftCapacity = 64_000_000 // tiles only need a small buffer
+        p.allowsPictureInPicture = false
         p.aspect = .fit
         p.lowPower = i != audioIndex
         p.audioEnabled = i == audioIndex

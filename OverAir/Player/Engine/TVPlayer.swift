@@ -141,6 +141,8 @@ final class TVPlayer {
     @ObservationIgnored private var openedAt = Date()
     @ObservationIgnored private var generation = 0
     @ObservationIgnored var timeshiftCapacity: Int64 = 1_500_000_000
+    /// Multiview tiles opt out so only the main player offers Picture in Picture.
+    @ObservationIgnored var allowsPictureInPicture = true
 
     init() {
         synchronizer.addRenderer(videoView.displayLayer.sampleBufferRenderer)
@@ -459,7 +461,7 @@ final class TVPlayer {
     // MARK: Picture in Picture
 
     private func setupPictureInPicture() {
-        guard pip == nil, AVPictureInPictureController.isPictureInPictureSupported() else { return }
+        guard allowsPictureInPicture, pip == nil, AVPictureInPictureController.isPictureInPictureSupported() else { return }
         let delegate = PiPDelegate(player: self)
         let source = AVPictureInPictureController.ContentSource(sampleBufferDisplayLayer: videoView.displayLayer, playbackDelegate: delegate)
         let controller = AVPictureInPictureController(contentSource: source)

@@ -142,9 +142,10 @@ final class PipelineWorker: @unchecked Sendable {
             }
             readOffset += Int64(chunk.count)
             chunk.withUnsafeBytes { demuxer.feed($0) }
-            if Date().timeIntervalSince(infoSent) > 1 {
+            if Date().timeIntervalSince(infoSent) > 0.5 {
                 infoSent = Date()
                 emit(.info(info))
+                if clockStarted { emit(.frame(lastVideoPTS)) }
             }
         }
     }
