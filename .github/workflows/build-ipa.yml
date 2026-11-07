@@ -8,7 +8,7 @@ on:
 
 jobs:
   build:
-    runs-on: macos-26
+    runs-on: xcode-27
     timeout-minutes: 60
     steps:
       - uses: actions/checkout@v4
@@ -17,7 +17,9 @@ jobs:
         id: xcode
         run: |
           echo "Installed Xcode versions:"; ls -d /Applications/Xcode*.app
-          XCODE=$(ls -d /Applications/Xcode*.app | grep -v -i beta | sort -V | tail -1)
+          # Prefer Xcode 27.1+ (required for full screen on iPhone Duo), else the newest installed.
+          XCODE=$(ls -d /Applications/Xcode_27.[1-9]*.app 2>/dev/null | grep -v -i beta | sort -V | tail -1 || true)
+          [ -z "$XCODE" ] && XCODE=$(ls -d /Applications/Xcode*.app | grep -v -i beta | sort -V | tail -1)
           sudo xcode-select -s "$XCODE"
           xcodebuild -version
           SDK=$(xcrun --sdk iphoneos --show-sdk-version)
