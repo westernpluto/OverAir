@@ -47,7 +47,9 @@ struct LineupEntry: Decodable, Sendable {
         videoCodec = c.str("VideoCodec")
         audioCodec = c.str("AudioCodec")
         hd = c.bool("HD") ?? false
-        drm = c.bool("DRM") ?? false
+        // Older firmware sets "DRM": 1; newer lists "drm" in a comma-separated "Tags" field.
+        let tags = (c.str("Tags") ?? "").lowercased().split(separator: ",").map { $0.trimmingCharacters(in: .whitespaces) }
+        drm = (c.bool("DRM") ?? false) || tags.contains("drm")
         favorite = c.bool("Favorite") ?? false
         url = c.url("URL")
     }

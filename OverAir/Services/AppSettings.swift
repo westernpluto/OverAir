@@ -92,6 +92,11 @@ final class AppSettings {
     var remoteCachingMs: Int { didSet { defaults.set(remoteCachingMs, forKey: "remoteCaching") } }
     var deinterlace: Bool { didSet { defaults.set(deinterlace, forKey: "deinterlace") } }
     var reduceLoudSounds: Bool { didSet { defaults.set(reduceLoudSounds, forKey: "reduceLoud") } }
+    /// Multiview arrangement: "auto", "grid" or "focus".
+    var multiviewLayout: String { didSet { defaults.set(multiviewLayout, forKey: "mvLayout") } }
+    /// Crop multiview tiles to fill the screen instead of showing the whole picture.
+    var multiviewFill: Bool { didSet { defaults.set(multiviewFill, forKey: "mvFill") } }
+    var multiviewHintSeen: Bool { didSet { defaults.set(multiviewHintSeen, forKey: "mvHint") } }
     var hardwareDecoding: Bool { didSet { defaults.set(hardwareDecoding, forKey: "hwDecode") } }
     var autoplayLastChannel: Bool { didSet { defaults.set(autoplayLastChannel, forKey: "autoplayLast") } }
     var showSignalOverlay: Bool { didSet { defaults.set(showSignalOverlay, forKey: "signalOverlay") } }
@@ -136,6 +141,9 @@ final class AppSettings {
         remoteCachingMs = int("remoteCaching", 3500)
         deinterlace = bool("deinterlace", true)
         reduceLoudSounds = bool("reduceLoud", true)
+        multiviewLayout = defaults.string(forKey: "mvLayout") ?? "auto"
+        multiviewFill = bool("mvFill", false)
+        multiviewHintSeen = bool("mvHint", false)
         hardwareDecoding = bool("hwDecode", true)
         autoplayLastChannel = bool("autoplayLast", false)
         showSignalOverlay = bool("signalOverlay", false)

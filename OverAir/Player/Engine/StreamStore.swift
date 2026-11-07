@@ -141,6 +141,8 @@ final class StreamStore: @unchecked Sendable {
 
 /// Streams an HTTP URL into a `StreamStore`, optionally from a byte offset (HTTP Range).
 final class NetworkFeeder: NSObject, URLSessionDataDelegate, @unchecked Sendable {
+    /// Bytes received since the stream was opened (for telling "no data" from "no picture").
+    private(set) var receivedBytes: Int64 = 0
     private let store: StreamStore
     private var session: URLSession!
     private var task: URLSessionDataTask?
@@ -185,8 +187,9 @@ final class NetworkFeeder: NSObject, URLSessionDataDelegate, @unchecked Sendable
         guard dataTask === task else { completionHandler(.cancel); return }
         if let http = response as? HTTPURLResponse {
             if !(200..<300).contains(http.statusCode) {
-                let reason = http.statusCode == 503 ? "All tuners are busy." : "The tuner returned HTTP \(http.statusCode)."
-                store.markFinished(HTTPError.unreachable(reason))
+                let problem = PlaybackProblem.fromHTTP(status: http.statusCode,
+                                                       hdhomerunError: http.value(forHTTPHeaderField: "X-HDHomeRun-Error"))
+                store.markFinished(problem)
                 completionHandler(.cancel)
                 return
             }
@@ -206,6 +209,7 @@ final class NetworkFeeder: NSObject, URLSessionDataDelegate, @unchecked Sendable
         onIndexBytes?(data, writeOffset)
         store.append(data)
         writeOffset += Int64(data.count)
+        receivedBytes += Int64(data.count)
         meterBytes += Int64(data.count)
         let elapsed = Date().timeIntervalSince(meterStart)
         if elapsed > 2 {
@@ -217,7 +221,7 @@ final class NetworkFeeder: NSObject, URLSessionDataDelegate, @unchecked Sendable
     func urlSession(_ session: URLSession, task: URLSessionTask, didCompleteWithError error: Error?) {
         guard task === self.task else { return }
         if let error = error as NSError?, error.code == NSURLErrorCancelled { return }
-        store.markFinished(error)
+        store.markFinished(error.map(PlaybackProblem.from))
     }
 }
 

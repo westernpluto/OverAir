@@ -128,6 +128,9 @@ final class TSDemuxer {
 
     // MARK: Packets
 
+    /// Elementary-stream packets with transport_scrambling_control set (encrypted content).
+    private(set) var scrambledPackets = 0
+
     private func handlePacket(_ p: UnsafePointer<UInt8>) {
         packetsSeen += 1
         let pusi = p[1] & 0x40 != 0
@@ -150,6 +153,7 @@ final class TSDemuxer {
             return
         }
         guard let kind = kinds[pid] else { return }
+        if p[3] & 0xC0 != 0 { scrambledPackets += 1; return }
 
         let a: Assembly
         if let existing = assemblies[pid] { a = existing } else { a = Assembly(); assemblies[pid] = a }

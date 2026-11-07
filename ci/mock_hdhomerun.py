@@ -18,6 +18,7 @@ CHANNELS = [
     ("13.1", "UniMas", "480i", "UNI"), ("20.1", "CW", "1080i", "CW"), ("26.1", "H&I", "480i", "HI"),
     ("32.1", "ION", "720p", "ION"),
     ("34.1", "KDAF-3", "atsc3", "CW"),
+    ("36.1", "WEAK", "1080i", "IND"),
 ]
 FAVORITE = {"2.1", "4.1", "7.1"}
 
@@ -59,7 +60,10 @@ def guide(start):
 def lineup():
     return [{"GuideNumber": n, "GuideName": nm, "VideoCodec": "HEVC" if f == "atsc3" else "MPEG2",
              "AudioCodec": "AC4" if f == "atsc3" else "AC3", "HD": 1 if f != "480i" else 0,
-             "Favorite": 1 if n in FAVORITE else 0, "URL": f"{BASE}/auto/v{n}"} for n, nm, f, _ in CHANNELS]
+             "Favorite": 1 if n in FAVORITE else 0, "URL": f"{BASE}/auto/v{n}"} for n, nm, f, _ in CHANNELS] + [
+            # An encrypted ATSC 3.0 channel, marked the way current firmware does.
+            {"GuideNumber": "40.1", "GuideName": "LOCKED", "VideoCodec": "HEVC", "AudioCodec": "AC4", "HD": 1,
+             "Tags": "drm", "URL": f"{BASE}/auto/v40.1"}]
 
 def discover():
     return {"FriendlyName": "HDHomeRun FLEX 4K", "ModelNumber": "HDFX-4K", "FirmwareName": "hdhomerun_dvr_atsc3",
@@ -166,12 +170,22 @@ class Handler(BaseHTTPRequestHandler):
             return self.stream("7.1", live=False)
         self.send_error(404)
 
+    def fail(self, code, text):
+        body = b""
+        self.send_response(503)
+        self.send_header("X-HDHomeRun-Error", f"{code} {text}")
+        self.send_header("Content-Length", "0")
+        self.end_headers()
+
     def stream(self, channel, live):
+        if channel == "36.1":            # weak signal: the real tuner waits ~5 s, then gives up
+            time.sleep(2)
+            return self.fail(807, "No Video Data")
         path = media_for(channel)
         data = open(path, "rb").read()
         tuner = next((i for i in range(4) if i not in ACTIVE), None)
         if tuner is None:
-            self.send_error(503, "All tuners in use"); return
+            return self.fail(805, "All Tuners In Use")
         ACTIVE[tuner] = channel
         self.send_response(200)
         self.send_header("Content-Type", "video/mp2t")

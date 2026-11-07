@@ -713,6 +713,28 @@ struct CaptionOverlay: View {
 struct PlayerStatusView: View {
     @Environment(PlaybackCoordinator.self) private var playback
     var controlsVisible: Bool
+    @State private var showSignal = false
+
+    @ViewBuilder
+    private func failureActions(_ problem: PlaybackProblem) -> some View {
+        if problem.isRetryable {
+            Button { playback.retry() } label: { Label("Try Again", systemImage: "arrow.clockwise") }
+                .buttonStyle(.borderedProminent)
+        }
+        if problem.suggestsSignalCheck {
+            Button { showSignal = true } label: { Label("Check Signal", systemImage: "antenna.radiowaves.left.and.right") }
+                .buttonStyle(.bordered)
+        }
+        if playback.item?.isLive == true {
+            if problem.isRetryable {
+                Button { playback.channelUp() } label: { Label("Next Channel", systemImage: "chevron.right") }
+                    .buttonStyle(.bordered)
+            } else {
+                Button { playback.channelUp() } label: { Label("Next Channel", systemImage: "chevron.right") }
+                    .buttonStyle(.borderedProminent)
+            }
+        }
+    }
 
     var body: some View {
         switch playback.player.state {
@@ -726,23 +748,39 @@ struct PlayerStatusView: View {
                 }
                 .allowsHitTesting(false)
             }
-        case let .failed(message):
-            VStack(spacing: 14) {
-                Image(systemName: "exclamationmark.triangle.fill").font(.largeTitle).foregroundStyle(.yellow)
-                Text(message).multilineTextAlignment(.center).font(.callout).foregroundStyle(.white)
-                HStack(spacing: 12) {
-                    Button { playback.retry() } label: { Label("Try Again", systemImage: "arrow.clockwise") }
-                        .buttonStyle(.borderedProminent)
-                    if playback.item?.isLive == true {
-                        Button { playback.channelUp() } label: { Label("Next Channel", systemImage: "chevron.right") }
-                            .buttonStyle(.bordered)
-                    }
+        case let .failed(problem):
+            VStack(spacing: 12) {
+                Image(systemName: problem.symbol)
+                    .font(.largeTitle)
+                    .foregroundStyle(problem == .copyProtected ? Color.white : Color.yellow)
+                Text(problem.title).font(.title3.weight(.semibold)).foregroundStyle(.white)
+                if let ch = playback.currentChannel {
+                    Text("\(ch.number) \(ch.name)").font(.subheadline).foregroundStyle(.white.opacity(0.7))
                 }
+                Text(problem.message)
+                    .multilineTextAlignment(.center)
+                    .font(.callout)
+                    .foregroundStyle(.white.opacity(0.9))
+                    .fixedSize(horizontal: false, vertical: true)
+                ViewThatFits(in: .horizontal) {
+                    HStack(spacing: 10) { failureActions(problem) }
+                    VStack(spacing: 10) { failureActions(problem) }
+                }
+                .padding(.top, 4)
             }
-            .padding(28)
-            .frame(maxWidth: 440)
+            .padding(24)
+            .frame(maxWidth: 460)
             .glass(in: RoundedRectangle(cornerRadius: 24, style: .continuous), interactive: false)
             .padding()
+            .sheet(isPresented: $showSignal) {
+                NavigationStack {
+                    TunerStatusView()
+                        .navigationTitle("Signal & Tuners")
+                        .navigationBarTitleDisplayMode(.inline)
+                        .toolbar { ToolbarItem(placement: .confirmationAction) { Button("Done") { showSignal = false } } }
+                }
+                .presentationDetents([.medium, .large])
+            }
         case .ended where playback.item?.isLive == false:
             VStack(spacing: 12) {
                 Image(systemName: "checkmark.circle.fill").font(.largeTitle).foregroundStyle(.green)

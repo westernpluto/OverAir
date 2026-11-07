@@ -19,7 +19,7 @@ final class PipelineWorker: @unchecked Sendable {
         case captions([CEA608Decoder.Row], Int64)
         case captionsAvailable
         case ended
-        case failed(String)
+        case failed(PlaybackProblem)
         case audioFailed
     }
 
@@ -66,6 +66,8 @@ final class PipelineWorker: @unchecked Sendable {
     private var infoSent = Date.distantPast
     private var adaptiveSkipB = false
     private var reportedAudioFailure = false
+    private var reportedScrambled = false
+    private var runningInBackground = false
     private var audioEndPTS: Int64 = 0           // end time of the last audio buffer handed to the renderer
     private var clockReleased = false
     private var firstVideoPTS: Int64 = 0
@@ -120,7 +122,13 @@ final class PipelineWorker: @unchecked Sendable {
             let isPaused = paused
             let pidChanged = audioPIDChanged
             audioPIDChanged = false
+            let background = lowPower
             lock.unlock()
+            if background != runningInBackground {
+                // Background multiview tiles yield the CPU to the one being listened to.
+                runningInBackground = background
+                pthread_set_qos_class_self_np(background ? QOS_CLASS_USER_INITIATED : QOS_CLASS_USER_INTERACTIVE, 0)
+            }
             if isCancelled { break }
             if let seek { performSeek(seek) }
             if pidChanged { audio = nil; audioEndPTS = 0; lateAudioRun = 0 }
@@ -152,7 +160,7 @@ final class PipelineWorker: @unchecked Sendable {
             guard let chunk = source.read(at: readOffset, max: 188 * 256, timeout: 0.1) else { continue }
             if chunk.isEmpty {
                 if let error = source.failure {
-                    emit(.failed(error.localizedDescription))
+                    emit(.failed(PlaybackProblem.from(error)))
                 } else {
                     demuxer.flush()
                     mpeg2?.flush()
@@ -168,6 +176,11 @@ final class PipelineWorker: @unchecked Sendable {
             }
             readOffset += Int64(chunk.count)
             chunk.withUnsafeBytes { demuxer.feed($0) }
+            // Encrypted (DRM) channels arrive with scrambled audio and video packets.
+            if !clockStarted && !reportedScrambled && demuxer.scrambledPackets > 400 {
+                reportedScrambled = true
+                emit(.failed(.copyProtected))
+            }
             if Date().timeIntervalSince(infoSent) > 0.5 {
                 infoSent = Date()
                 emit(.info(info))
@@ -207,6 +220,8 @@ final class PipelineWorker: @unchecked Sendable {
             compressed = makePackager(hevc: false)
         case .hevc?:
             compressed = makePackager(hevc: true)
+        case let kind?:
+            emit(.failed(.unsupportedVideo(kind.name)))
         default:
             break
         }
@@ -244,14 +259,15 @@ final class PipelineWorker: @unchecked Sendable {
         lock.lock()
         let pid = audioPID
         let audioOn = audioEnabled
-        let low = lowPower
         lock.unlock()
 
         if pes.kind.isVideo && pes.pid == program?.video?.pid {
             let pts = pes.pts.map(unwrapPTS)
             let dts = pes.dts.map(unwrapPTS)
             if let mpeg2 {
-                mpeg2.skipBPictures = low || adaptiveSkipB
+                // Every picture is decoded, background tiles included (skipping B-pictures halves
+                // the frame rate and looks choppy); only a device that falls behind drops them.
+                mpeg2.skipBPictures = adaptiveSkipB
                 mpeg2.decode(pes.payload, pts: pts)
             } else if let compressed, let sb = compressed.makeSampleBuffer(pes.payload, pts: pts, dts: dts) {
                 if let d = dropBefore, let pts, pts < d { Self.markDoNotDisplay(sb) }
@@ -308,7 +324,7 @@ final class PipelineWorker: @unchecked Sendable {
         guard let pts = pic.pts else { return }
         if let d = dropBefore, pts < d - 1_500 { return }
         lock.lock()
-        let low = lowPower || !deinterlaceOn
+        let low = !deinterlaceOn
         lock.unlock()
 
         info.width = pic.width

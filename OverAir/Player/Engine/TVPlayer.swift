@@ -88,7 +88,7 @@ struct AudioTrack: Identifiable, Hashable {
 final class TVPlayer {
     enum State: Equatable {
         case idle, opening, buffering, playing, paused, ended
-        case failed(String)
+        case failed(PlaybackProblem)
 
         var isActive: Bool { [.opening, .buffering, .playing, .paused].contains(self) }
         var isLoading: Bool { self == .opening || self == .buffering }
@@ -215,12 +215,12 @@ final class TVPlayer {
 
         let source: ByteSource
         if local {
-            guard let file = FileByteSource(url: url) else { state = .failed("Couldn't open the recording file."); return }
+            guard let file = FileByteSource(url: url) else { state = .failed(.other("Couldn't open the recording file.")); return }
             source = file
             totalBytes = file.length
         } else {
             guard let s = try? StreamStore(capacity: live ? timeshiftCapacity : 600_000_000) else {
-                state = .failed("Not enough storage to buffer video."); return
+                state = .failed(.other("This iPhone doesn't have enough free storage to buffer live TV.")); return
             }
             store = s
             let f = NetworkFeeder(store: s)
@@ -273,7 +273,8 @@ final class TVPlayer {
         return (Int64(Double(total) * fraction) / 188) * 188
     }
 
-    func stop() {
+    /// Stops playback and releases the tuner. `keepState` leaves a failure on screen.
+    func stop(keepState: Bool = false) {
         generation += 1
         timer?.invalidate(); timer = nil
         worker?.cancel()
@@ -287,7 +288,13 @@ final class TVPlayer {
         audioRenderer.flush()
         pendingCaptions.removeAll()
         captionRows = []
-        state = .idle
+        if !keepState { state = .idle }
+    }
+
+    /// Shows a problem without tuning (for example a channel known to be copy protected).
+    func fail(_ problem: PlaybackProblem) {
+        stop(keepState: true)
+        state = .failed(problem)
     }
 
     func togglePause() { state == .paused ? resume() : pause() }
@@ -440,8 +447,10 @@ final class TVPlayer {
             hasCaptions = true
         case .ended:
             if !isLive { state = .ended; synchronizer.rate = 0 }
-        case let .failed(message):
-            state = .failed(message)
+        case let .failed(problem):
+            guard state != .failed(problem) else { break }
+            stop(keepState: true)                    // release the tuner
+            state = .failed(problem)
             synchronizer.rate = 0
         case .audioFailed:
             info.audioCodec = (info.audioCodec ?? "Audio") + " (decoded in software)"
@@ -480,10 +489,19 @@ final class TVPlayer {
             position = max(0, Double(nowPTS - first) / 90000)
         }
         // Stalls: no data at all.
-        if state == .opening && Date().timeIntervalSince(openedAt) > 15 {
-            state = .failed("The tuner didn't send any video. It may be busy, or the signal is too weak.")
+        if state == .opening && Date().timeIntervalSince(openedAt) > 12 {
+            // Nothing playable yet: no bytes at all means the tuner isn't receiving; bytes without a
+            // picture means the signal is breaking up.
+            let received = feeder?.receivedBytes ?? 1
+            stop(keepState: true)
+            state = .failed(received == 0 ? .noSignal : .noVideo)
         }
         let sinceFrame = Date().timeIntervalSince(lastFrameWall)
+        if isLive && stalled && state == .buffering && sinceFrame > 15 {
+            stop(keepState: true)
+            state = .failed(.signalLost)
+            return
+        }
         if state == .playing, synchronizer.rate > 0, lastFramePTS > 0 {
             if sinceFrame > 3 {
                 // Nothing new from the tuner for a while: hold the picture where it is.

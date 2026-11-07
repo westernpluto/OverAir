@@ -88,6 +88,11 @@ final class PlaybackCoordinator {
         Haptics.tap(settings)
 
         tuneTask?.cancel()
+        // The HDHomeRun marks encrypted channels in its lineup: say so instead of tying up a tuner.
+        if channel.isDRM {
+            player.fail(.copyProtected)
+            return
+        }
         var options = TVPlayer.Options()
         options.captions = settings.closedCaptionsByDefault || player.captionsEnabled
         if wasSurfing { player.stop() } // release the old tuner right away
