@@ -1,0 +1,30 @@
+name: Build unsigned IPA
+
+on:
+  push:
+    branches: [ main, "claude/**" ]
+  pull_request:
+  workflow_dispatch:
+
+jobs:
+  build:
+    runs-on: macos-latest
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Select newest Xcode
+        run: |
+          XCODE=$(ls -d /Applications/Xcode*.app | grep -v -i beta | sort -V | tail -1)
+          echo "Using $XCODE"
+          sudo xcode-select -s "$XCODE"
+          xcodebuild -version
+
+      - name: Build unsigned IPA
+        run: ./scripts/build-unsigned-ipa.sh
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: OverAir-unsigned-ipa
+          path: build/OverAir-unsigned.ipa
+          if-no-files-found: error
