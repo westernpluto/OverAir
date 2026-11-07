@@ -59,6 +59,15 @@ The GitHub Actions workflow `.github/workflows/build-ipa.yml` builds the same un
 
 Requires iOS 18 or later.
 
+### iPhone Duo: build with Xcode 27.1
+
+iPhone Duo shows apps full screen on its inner display only if they were built with the **iOS 27.1 SDK**. Apps built with an older SDK open in a letterboxed, phone-sized window with black bars, whatever their project settings say.
+
+- Build the IPA on your Mac with **Xcode 27.1**. Check with `xcodebuild -version`, and switch with `sudo xcode-select -s /Applications/Xcode.app` if needed.
+- GitHub's macOS runners currently top out at Xcode 26.6 (iOS 26.5 SDK). The CI artifact is therefore named `…-letterboxed-on-Duo`. It's useful as a compile check and for regular iPhones, but not for the Duo's inner screen.
+
+When unfolded, the Duo reports a *regular* width, and OverAir switches to its sidebar layout with favorites.
+
 ## Notes & limitations
 
 - **Guide data and DVR rules** come from SiliconDust's cloud, using your tuner's DeviceAuth. Extended guide data and the DVR need an active HDHomeRun DVR subscription, as with the official app.
