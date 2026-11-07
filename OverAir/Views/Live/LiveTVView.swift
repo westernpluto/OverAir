@@ -17,6 +17,7 @@ struct LiveTVView: View {
     @State private var showKeypad = false
     @State private var detailProgram: GuideProgram?
     @State private var channelPage: Channel?
+    @State private var contentWidth: CGFloat = 390
 
     var body: some View {
         NowTicker(interval: 30) { now in
@@ -33,6 +34,7 @@ struct LiveTVView: View {
                 }
                 .padding(.vertical, 8)
             }
+            .onGeometryChange(for: CGFloat.self) { $0.size.width } action: { contentWidth = $0 }
             .refreshable {
                 await tuners.connect()
                 await guide.load(deviceAuth: tuners.deviceAuth, hours: settings.guideHours, force: true)
@@ -132,18 +134,15 @@ struct LiveTVView: View {
                 .padding(.horizontal)
         } else if hSize == .regular {
             // Wide (iPhone Duo open, iPad): cards in an even number of columns so nothing straddles the fold.
-            GeometryReader { geo in
-                let cols = Fold.evenColumns(for: geo.size.width - 32, minimumItemWidth: 260)
-                LazyVGrid(columns: Array(repeating: GridItem(.flexible(), spacing: 14), count: cols), spacing: 18) {
-                    ForEach(list) { ch in
-                        ChannelCard(channel: ch, now: now)
-                            .onTapGesture { playback.play(ch) }
-                            .contextMenu { channelMenu(ch) }
-                    }
+            let cols = Fold.evenColumns(for: contentWidth - 32, minimumItemWidth: 260)
+            LazyVGrid(columns: Array(repeating: GridItem(.flexible(), spacing: 14), count: cols), spacing: 18) {
+                ForEach(list) { ch in
+                    ChannelCard(channel: ch, now: now)
+                        .onTapGesture { playback.play(ch) }
+                        .contextMenu { channelMenu(ch) }
                 }
-                .padding(.horizontal)
             }
-            .frame(minHeight: CGFloat((list.count + 1) / 2) * 230)
+            .padding(.horizontal)
         } else {
             LazyVStack(spacing: 0) {
                 ForEach(list) { ch in
