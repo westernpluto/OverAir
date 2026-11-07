@@ -148,7 +148,9 @@ final class TVPlayer {
     @ObservationIgnored private var lastFrameWall = Date()     // when the decoder last produced a new frame
     @ObservationIgnored private var lastReanchor = Date.distantPast
     @ObservationIgnored private var stalled = false
-    @ObservationIgnored private var progressCount = 0             // buffering because the stream ran dry (not a seek)
+    @ObservationIgnored private var progressCount = 0
+    @ObservationIgnored private var lastReceivedBytes: Int64 = -1
+    @ObservationIgnored private var lastBytesWall = Date()             // buffering because the stream ran dry (not a seek)
     @ObservationIgnored private var sourceURL: URL?
     @ObservationIgnored private var totalBytes: Int64?
     @ObservationIgnored private var pendingCaptions: [(pts: Int64, rows: [CEA608Decoder.Row])] = []
@@ -198,6 +200,8 @@ final class TVPlayer {
         sourceURL = url
         state = .opening
         openedAt = Date()
+        lastReceivedBytes = -1
+        lastBytesWall = Date()
         position = 0
         duration = options.duration ?? 0
         behindLive = 0
@@ -489,15 +493,24 @@ final class TVPlayer {
             position = max(0, Double(nowPTS - first) / 90000)
         }
         // Stalls: no data at all.
-        if state == .opening && Date().timeIntervalSince(openedAt) > 12 {
+        let received = feeder?.receivedBytes ?? 0
+        if received != lastReceivedBytes {
+            lastReceivedBytes = received
+            lastBytesWall = Date()
+        }
+        let opening = Date().timeIntervalSince(openedAt)
+        if state == .opening && (opening > 25 || (opening > 12 && received == 0)) {
             // Nothing playable yet: no bytes at all means the tuner isn't receiving; bytes without a
-            // picture means the signal is breaking up.
-            let received = feeder?.receivedBytes ?? 1
+            // picture (for long enough that a busy device can't explain it) means the signal is
+            // breaking up.
             stop(keepState: true)
             state = .failed(received == 0 ? .noSignal : .noVideo)
+            return
         }
         let sinceFrame = Date().timeIntervalSince(lastFrameWall)
-        if isLive && stalled && state == .buffering && sinceFrame > 15 {
+        // Signal lost only when the tuner itself stopped sending: a device that is merely too busy
+        // to decode (several multiview tiles) still receives data.
+        if isLive && stalled && state == .buffering && sinceFrame > 15 && Date().timeIntervalSince(lastBytesWall) > 10 {
             stop(keepState: true)
             state = .failed(.signalLost)
             return

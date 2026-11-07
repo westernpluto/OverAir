@@ -716,21 +716,23 @@ struct PlayerStatusView: View {
     @State private var showSignal = false
 
     @ViewBuilder
-    private func failureActions(_ problem: PlaybackProblem) -> some View {
+    private func failureActions(_ problem: PlaybackProblem, compact: Bool) -> some View {
         if problem.isRetryable {
             Button { playback.retry() } label: { Label("Try Again", systemImage: "arrow.clockwise") }
                 .buttonStyle(.borderedProminent)
         }
         if problem.suggestsSignalCheck {
-            Button { showSignal = true } label: { Label("Check Signal", systemImage: "antenna.radiowaves.left.and.right") }
-                .buttonStyle(.bordered)
+            Button { showSignal = true } label: {
+                Label(compact ? "Signal" : "Check Signal", systemImage: "antenna.radiowaves.left.and.right")
+            }
+            .buttonStyle(.bordered)
         }
         if playback.item?.isLive == true {
             if problem.isRetryable {
-                Button { playback.channelUp() } label: { Label("Next Channel", systemImage: "chevron.right") }
+                Button { playback.channelUp() } label: { Label(compact ? "Next" : "Next Channel", systemImage: "chevron.right") }
                     .buttonStyle(.bordered)
             } else {
-                Button { playback.channelUp() } label: { Label("Next Channel", systemImage: "chevron.right") }
+                Button { playback.channelUp() } label: { Label(compact ? "Next" : "Next Channel", systemImage: "chevron.right") }
                     .buttonStyle(.borderedProminent)
             }
         }
@@ -749,29 +751,33 @@ struct PlayerStatusView: View {
                 .allowsHitTesting(false)
             }
         case let .failed(problem):
-            VStack(spacing: 12) {
-                Image(systemName: problem.symbol)
-                    .font(.largeTitle)
-                    .foregroundStyle(problem == .copyProtected ? Color.white : Color.yellow)
-                Text(problem.title).font(.title3.weight(.semibold)).foregroundStyle(.white)
-                if let ch = playback.currentChannel {
-                    Text("\(ch.number) \(ch.name)").font(.subheadline).foregroundStyle(.white.opacity(0.7))
+            VStack(spacing: 10) {
+                HStack(spacing: 10) {
+                    Image(systemName: problem.symbol)
+                        .font(.title2)
+                        .foregroundStyle(problem == .copyProtected ? Color.white : Color.yellow)
+                    Text(problem.title).font(.headline).foregroundStyle(.white)
                 }
                 Text(problem.message)
                     .multilineTextAlignment(.center)
-                    .font(.callout)
+                    .font(.subheadline)
                     .foregroundStyle(.white.opacity(0.9))
                     .fixedSize(horizontal: false, vertical: true)
                 ViewThatFits(in: .horizontal) {
-                    HStack(spacing: 10) { failureActions(problem) }
-                    VStack(spacing: 10) { failureActions(problem) }
+                    HStack(spacing: 8) { failureActions(problem, compact: false) }
+                    HStack(spacing: 8) { failureActions(problem, compact: true) }
+                    VStack(spacing: 8) { failureActions(problem, compact: false) }
                 }
-                .padding(.top, 4)
+                .controlSize(.small)
+                .padding(.top, 2)
             }
-            .padding(24)
-            .frame(maxWidth: 460)
-            .glass(in: RoundedRectangle(cornerRadius: 24, style: .continuous), interactive: false)
+            .padding(18)
+            .frame(maxWidth: 440)
+            .glass(in: RoundedRectangle(cornerRadius: 22, style: .continuous), interactive: false)
             .padding()
+            // Stay clear of the channel title and buttons at the bottom.
+            .padding(.bottom, controlsVisible ? 170 : 0)
+            .frame(maxHeight: .infinity)
             .sheet(isPresented: $showSignal) {
                 NavigationStack {
                     TunerStatusView()
