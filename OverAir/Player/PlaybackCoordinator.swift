@@ -242,6 +242,8 @@ final class PlaybackCoordinator {
     // MARK: System integration
 
     private func activateAudioSession() {
+        player.reduceLoudSounds = settings.reduceLoudSounds
+        player.deinterlace = settings.deinterlace
         let session = AVAudioSession.sharedInstance()
         try? session.setCategory(.playback, mode: .moviePlayback, policy: .longFormVideo)
         try? session.setActive(true)

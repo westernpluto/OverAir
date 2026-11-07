@@ -67,7 +67,8 @@ struct ProgramDetailView: View {
     private var header: some View {
         ZStack(alignment: .bottomLeading) {
             Artwork(url: program.imageURL ?? program.posterURL, fallbackSymbol: program.primaryGenre?.symbol ?? "tv", cornerRadius: 0)
-                .frame(height: 260)
+                .frame(maxWidth: .infinity)
+                .frame(height: 220)
                 .clipped()
             LinearGradient(colors: [.clear, Theme.background], startPoint: .center, endPoint: .bottom)
             VStack(alignment: .leading, spacing: 6) {
@@ -261,6 +262,28 @@ struct ProgramDetailView: View {
                 reminderSet = await Reminders.schedule(program, channelName: channel?.name ?? "", minutesBefore: settings.reminderMinutes)
                 if !reminderSet { message = "Allow notifications in Settings to use reminders." }
             }
+        }
+    }
+}
+
+extension View {
+    /// Shows a program's details. On a phone it's a sheet that opens halfway and can be pulled up; on wide
+    /// displays (iPhone Duo open, iPad) it's a full-height panel at the trailing edge, so the guide or list
+    /// it came from stays visible beside it.
+    func programSheet(item: Binding<GuideProgram?>) -> some View {
+        modifier(ProgramSheet(item: item))
+    }
+}
+
+private struct ProgramSheet: ViewModifier {
+    @Binding var item: GuideProgram?
+    @Environment(\.horizontalSizeClass) private var sizeClass
+
+    func body(content: Content) -> some View {
+        content.sheet(item: $item) { p in
+            NavigationStack { ProgramDetailView(program: p) }
+                .presentationDetents(sizeClass == .regular ? [.large] : [.medium, .large])
+                .detailSheetPlacement()
         }
     }
 }

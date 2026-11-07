@@ -4,63 +4,86 @@ import AudioToolbox
 import CoreMedia
 
 /// Turns audio PES payloads into sample buffers for AVSampleBufferAudioRenderer.
-/// Compressed Dolby/AAC/MP2 packets are handed to the system decoder; if the renderer can't
-/// take a format, `pcmFallback` switches to decoding with AudioConverter.
+/// Dolby Digital (AC-3), the audio on every ATSC 1.0 channel, is decoded here by `AC3Decoder` and
+/// handed over as PCM. Other formats go to the system decoder as compressed packets; if the
+/// renderer can't take one, `pcmFallback` decodes it with AudioConverter instead.
 final class AudioPackager {
     let kind: TSDemuxer.Kind
     private var format: CMAudioFormatDescription?
     private var formatKey = ""
     private var converter: PCMConverter?
+    private var ac3: AC3Decoder?
+    private var pcmFormat: CMAudioFormatDescription?
+    private var pcmRate = 0
     var pcmFallback = false
+    /// Broadcaster dynamic range control for Dolby Digital: 0 = off, 1 = full.
+    var dynamicRange: Float = 1 { didSet { ac3?.dynamicRange = dynamicRange } }
     private(set) var sampleRate = 0
     private(set) var channels = 0
+    private(set) var layoutName: String?
+    private(set) var decodesInApp = false
 
-    init(kind: TSDemuxer.Kind) { self.kind = kind }
+    private let assembler: AudioFrameAssembler
+
+    init(kind: TSDemuxer.Kind) {
+        self.kind = kind
+        assembler = AudioFrameAssembler(kind: kind)
+        if kind == .ac3 {
+            ac3 = AC3Decoder()
+            decodesInApp = true
+        }
+    }
 
     func reset() {
         converter = nil
+        assembler.reset()
+        ac3?.reset()
     }
 
     func makeSampleBuffers(_ payload: [UInt8], pts: Int64?) -> [CMSampleBuffer] {
-        guard let pts else { return [] }
-        let frames: [AudioFrameParser.Frame]
-        var cookie: [UInt8]?
-        var formatID: AudioFormatID
+        let frames = assembler.push(payload, pts: pts)
+        guard let first = frames.first else { return [] }
+
+        if let ac3 {
+            return frames.compactMap { (tf) -> CMSampleBuffer? in
+                guard let pcm = tf.bytes.withUnsafeBytes({ ac3.decode($0) }) else { return nil }
+                if let f = ac3.format {
+                    sampleRate = f.sampleRate
+                    channels = f.channelCount
+                    layoutName = f.layoutName
+                }
+                return makePCMBuffer(pcm, rate: ac3.format?.sampleRate ?? 48000, pts: tf.pts)
+            }
+        }
+
+        let formatID: AudioFormatID
         switch kind {
-        case .ac3: frames = AudioFrameParser.dolbyFrames(payload); formatID = kAudioFormatAC3
-        case .eac3: frames = AudioFrameParser.dolbyFrames(payload); formatID = kAudioFormatEnhancedAC3
-        case .aacADTS:
-            let r = AudioFrameParser.adtsFrames(payload)
-            frames = r.frames; cookie = r.config; formatID = kAudioFormatMPEG4AAC
-        case .mpegAudio: frames = AudioFrameParser.mpegAudioFrames(payload); formatID = kAudioFormatMPEGLayer2
+        case .eac3: formatID = kAudioFormatEnhancedAC3
+        case .aacADTS: formatID = kAudioFormatMPEG4AAC
+        case .mpegAudio: formatID = kAudioFormatMPEGLayer2
         default: return []
         }
-        guard let first = frames.first else { return [] }
-        sampleRate = first.sampleRate
-        channels = first.channels
+        let cookie = assembler.config
+        sampleRate = first.frame.sampleRate
+        channels = first.frame.channels
+        layoutName = nil
 
         if pcmFallback {
             if converter == nil {
-                converter = PCMConverter(formatID: formatID, sampleRate: first.sampleRate, channels: first.channels,
-                                         framesPerPacket: first.samplesPerFrame, cookie: cookie)
+                converter = PCMConverter(formatID: formatID, sampleRate: first.frame.sampleRate, channels: first.frame.channels,
+                                         framesPerPacket: first.frame.samplesPerFrame, cookie: cookie)
             }
             guard let converter else { return [] }
-            var out: [CMSampleBuffer] = []
-            var t = pts
-            for f in frames {
-                if let sb = converter.decode(Array(payload[f.range]), pts: t) { out.append(sb) }
-                t += Int64(f.samplesPerFrame) * 90000 / Int64(f.sampleRate)
-            }
-            return out
+            return frames.compactMap { (tf) -> CMSampleBuffer? in converter.decode(tf.bytes, pts: tf.pts) }
         }
 
-        let key = "\(formatID)-\(first.sampleRate)-\(first.channels)-\(first.samplesPerFrame)"
+        let key = "\(formatID)-\(first.frame.sampleRate)-\(first.frame.channels)-\(first.frame.samplesPerFrame)"
         if key != formatKey || format == nil {
             var asbd = AudioStreamBasicDescription(
-                mSampleRate: Float64(first.sampleRate), mFormatID: formatID,
+                mSampleRate: Float64(first.frame.sampleRate), mFormatID: formatID,
                 mFormatFlags: formatID == kAudioFormatMPEG4AAC ? AudioFormatFlags(MPEG4ObjectID.AAC_LC.rawValue) : 0,
-                mBytesPerPacket: 0, mFramesPerPacket: UInt32(first.samplesPerFrame), mBytesPerFrame: 0,
-                mChannelsPerFrame: UInt32(first.channels), mBitsPerChannel: 0, mReserved: 0)
+                mBytesPerPacket: 0, mFramesPerPacket: UInt32(first.frame.samplesPerFrame), mBytesPerFrame: 0,
+                mChannelsPerFrame: UInt32(first.frame.channels), mBitsPerChannel: 0, mReserved: 0)
             var fmt: CMAudioFormatDescription?
             if let cookie {
                 cookie.withUnsafeBytes { c in
@@ -77,24 +100,59 @@ final class AudioPackager {
         }
         guard let format else { return [] }
 
-        var data: [UInt8] = []
-        var descs: [AudioStreamPacketDescription] = []
-        for f in frames {
-            descs.append(AudioStreamPacketDescription(mStartOffset: Int64(data.count), mVariableFramesInPacket: 0, mDataByteSize: UInt32(f.range.count)))
-            data.append(contentsOf: payload[f.range])
+        // One buffer per frame keeps every buffer's timestamp exact.
+        return frames.compactMap { (tf) -> CMSampleBuffer? in
+            let bytes = tf.bytes
+            var desc = AudioStreamPacketDescription(mStartOffset: 0, mVariableFramesInPacket: 0, mDataByteSize: UInt32(bytes.count))
+            guard let block = Self.blockBuffer(bytes) else { return nil }
+            var sb: CMSampleBuffer?
+            CMAudioSampleBufferCreateReadyWithPacketDescriptions(allocator: nil, dataBuffer: block, formatDescription: format,
+                                                                 sampleCount: 1,
+                                                                 presentationTimeStamp: CMTime(value: tf.pts, timescale: 90000),
+                                                                 packetDescriptions: &desc, sampleBufferOut: &sb)
+            return sb
         }
-        var block: CMBlockBuffer?
-        guard CMBlockBufferCreateWithMemoryBlock(allocator: nil, memoryBlock: nil, blockLength: data.count, blockAllocator: nil,
-                                                 customBlockSource: nil, offsetToData: 0, dataLength: data.count,
-                                                 flags: kCMBlockBufferAssureMemoryNowFlag, blockBufferOut: &block) == noErr,
-              let block else { return [] }
-        data.withUnsafeBytes { _ = CMBlockBufferReplaceDataBytes(with: $0.baseAddress!, blockBuffer: block, offsetIntoDestination: 0, dataLength: data.count) }
+    }
+
+    private func makePCMBuffer(_ samples: [Float], rate: Int, pts: Int64) -> CMSampleBuffer? {
+        if pcmFormat == nil || pcmRate != rate {
+            var asbd = AudioStreamBasicDescription(mSampleRate: Float64(rate), mFormatID: kAudioFormatLinearPCM,
+                                                   mFormatFlags: kAudioFormatFlagIsFloat | kAudioFormatFlagIsPacked,
+                                                   mBytesPerPacket: 8, mFramesPerPacket: 1, mBytesPerFrame: 8,
+                                                   mChannelsPerFrame: 2, mBitsPerChannel: 32, mReserved: 0)
+            var layout = AudioChannelLayout()
+            layout.mChannelLayoutTag = kAudioChannelLayoutTag_Stereo
+            var fmt: CMAudioFormatDescription?
+            CMAudioFormatDescriptionCreate(allocator: nil, asbd: &asbd, layoutSize: MemoryLayout<AudioChannelLayout>.size,
+                                           layout: &layout, magicCookieSize: 0, magicCookie: nil, extensions: nil,
+                                           formatDescriptionOut: &fmt)
+            pcmFormat = fmt
+            pcmRate = rate
+        }
+        guard let pcmFormat else { return nil }
+        let block: CMBlockBuffer? = samples.withUnsafeBytes { Self.blockBuffer($0) }
+        guard let block else { return nil }
         var sb: CMSampleBuffer?
-        CMAudioSampleBufferCreateReadyWithPacketDescriptions(allocator: nil, dataBuffer: block, formatDescription: format,
-                                                             sampleCount: descs.count,
+        CMAudioSampleBufferCreateReadyWithPacketDescriptions(allocator: nil, dataBuffer: block, formatDescription: pcmFormat,
+                                                             sampleCount: samples.count / 2,
                                                              presentationTimeStamp: CMTime(value: pts, timescale: 90000),
-                                                             packetDescriptions: &descs, sampleBufferOut: &sb)
-        return sb.map { [$0] } ?? []
+                                                             packetDescriptions: nil, sampleBufferOut: &sb)
+        return sb
+    }
+
+    private static func blockBuffer(_ bytes: [UInt8]) -> CMBlockBuffer? {
+        bytes.withUnsafeBytes { blockBuffer($0) }
+    }
+
+    private static func blockBuffer(_ raw: UnsafeRawBufferPointer) -> CMBlockBuffer? {
+        guard raw.count > 0 else { return nil }
+        var block: CMBlockBuffer?
+        guard CMBlockBufferCreateWithMemoryBlock(allocator: nil, memoryBlock: nil, blockLength: raw.count, blockAllocator: nil,
+                                                 customBlockSource: nil, offsetToData: 0, dataLength: raw.count,
+                                                 flags: kCMBlockBufferAssureMemoryNowFlag, blockBufferOut: &block) == noErr,
+              let block else { return nil }
+        CMBlockBufferReplaceDataBytes(with: raw.baseAddress!, blockBuffer: block, offsetIntoDestination: 0, dataLength: raw.count)
+        return block
     }
 }
 

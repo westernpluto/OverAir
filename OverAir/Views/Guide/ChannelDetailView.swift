@@ -103,11 +103,7 @@ struct ChannelDetailView: View {
         }
         .navigationTitle("\(channel.number) \(channel.name)")
         .navigationBarTitleDisplayMode(.inline)
-        .sheet(item: $selected) { p in
-            NavigationStack { ProgramDetailView(program: p) }
-                .presentationDetents([.medium, .large])
-                .detailSheetPlacement()
-        }
+        .programSheet(item: $selected)
     }
 
     private var header: some View {

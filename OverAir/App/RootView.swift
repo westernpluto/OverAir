@@ -10,6 +10,7 @@ struct RootView: View {
 
     @State private var tab: AppTab = .live
     @State private var didBoot = false
+    @State private var scenarioProgram: GuideProgram?   // screenshot scenario "program"
 
     var body: some View {
         @Bindable var playback = playback
@@ -18,6 +19,7 @@ struct RootView: View {
                 OnboardingView()
             } else {
                 MainTabs(selection: $tab)
+                    .programSheet(item: $scenarioProgram)
             }
 
             // The player stays mounted while anything is playing; minimising only hides it.
@@ -80,6 +82,9 @@ struct RootView: View {
         case "recordings": tab = .dvr
         case "search": tab = .search
         case "settings": tab = .settings
+        case "program":
+            tab = .guide
+            scenarioProgram = tuners.channels.lazy.compactMap { guide.nowPlaying($0.number) }.first
         case "player", "player-tips":
             if let ch = tuners.channels.first { playback.play(ch) }
         case "player-mini":

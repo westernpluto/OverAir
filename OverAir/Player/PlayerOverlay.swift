@@ -871,6 +871,7 @@ struct StreamInfoSheet: View {
                 Section("Audio") {
                     LabeledContent("Codec", value: info.audioCodec ?? "—")
                     LabeledContent("Channels", value: info.channelLabel)
+                    if info.audioDecodedInApp { LabeledContent("Decoder", value: "OverAir (built in)") }
                     if info.sampleRate > 0 { LabeledContent("Sample Rate", value: "\(info.sampleRate / 1000) kHz") }
                 }
                 Section("Stream") {

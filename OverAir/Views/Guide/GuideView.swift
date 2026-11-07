@@ -66,11 +66,7 @@ struct GuideView: View {
                 }
             }
         }
-        .sheet(item: $selected) { p in
-            NavigationStack { ProgramDetailView(program: p) }
-                .presentationDetents([.medium, .large])
-                .detailSheetPlacement()
-        }
+        .programSheet(item: $selected)
         .navigationDestination(item: $channelPage) { ch in ChannelDetailView(channel: ch) }
     }
 

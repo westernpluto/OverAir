@@ -28,11 +28,7 @@ struct SearchView: View {
         .navigationTitle("Search")
         .searchable(text: $query, prompt: "Shows, movies, teams, channels")
         .task(id: trimmed) { await searchCloud() }
-        .sheet(item: $selected) { p in
-            NavigationStack { ProgramDetailView(program: p) }
-                .presentationDetents([.medium, .large])
-                .detailSheetPlacement()
-        }
+        .programSheet(item: $selected)
         .navigationDestination(for: Genre.self) { g in CategoryListingView(genre: g) }
         .navigationDestination(for: Channel.self) { ch in ChannelDetailView(channel: ch) }
     }
@@ -252,10 +248,6 @@ struct CategoryListingView: View {
         .listStyle(.plain)
         .overlay { if programs.isEmpty { ContentUnavailableView("Nothing Coming Up", systemImage: genre.symbol) } }
         .navigationTitle(genre.name)
-        .sheet(item: $selected) { p in
-            NavigationStack { ProgramDetailView(program: p) }
-                .presentationDetents([.medium, .large])
-                .detailSheetPlacement()
-        }
+        .programSheet(item: $selected)
     }
 }

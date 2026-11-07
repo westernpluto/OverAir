@@ -8,8 +8,13 @@ import CoreVideo
 final class PipelineWorker: @unchecked Sendable {
     enum Event {
         case program(TSDemuxer.Program)
+        /// The first picture is ready; the clock is held on it until audio has caught up.
         case firstFrame(Int64)
-        case frame(Int64)
+        /// Enough audio is buffered: start the clock at this time.
+        case startClock(Int64)
+        /// Audio keeps arriving after its play time; move the clock back to this time.
+        case audioLate(Int64)
+        case progress(video: Int64, audio: Int64)
         case info(StreamInfo)
         case captions([CEA608Decoder.Row], Int64)
         case captionsAvailable
@@ -34,6 +39,7 @@ final class PipelineWorker: @unchecked Sendable {
     private var lowPower = false
     private var audioEnabled = true
     private var deinterlaceOn = true
+    private var dynamicRange: Float = 1
     private var audioPID: Int?
     private var audioPIDChanged = false
 
@@ -60,6 +66,12 @@ final class PipelineWorker: @unchecked Sendable {
     private var infoSent = Date.distantPast
     private var adaptiveSkipB = false
     private var reportedAudioFailure = false
+    private var audioEndPTS: Int64 = 0           // end time of the last audio buffer handed to the renderer
+    private var clockReleased = false
+    private var firstVideoPTS: Int64 = 0
+    private var firstFrameWall = Date()
+    private var lateAudioRun = 0
+    private var lastLateReport = Date.distantPast
 
     init(source: ByteSource, videoRenderer: AVSampleBufferVideoRenderer, audioRenderer: AVSampleBufferAudioRenderer,
          synchronizer: AVSampleBufferRenderSynchronizer) {
@@ -85,6 +97,7 @@ final class PipelineWorker: @unchecked Sendable {
     func setLowPower(_ on: Bool) { lock.lock(); lowPower = on; lock.unlock() }
     func setAudioEnabled(_ on: Bool) { lock.lock(); audioEnabled = on; lock.unlock() }
     func setDeinterlace(_ on: Bool) { lock.lock(); deinterlaceOn = on; lock.unlock() }
+    func setDynamicRange(_ v: Float) { lock.lock(); dynamicRange = v; lock.unlock() }
     func selectAudio(pid: Int?) { lock.lock(); audioPID = pid; audioPIDChanged = true; lock.unlock() }
 
     func seek(to offset: Int64, dropBefore: Int64?) {
@@ -110,17 +123,30 @@ final class PipelineWorker: @unchecked Sendable {
             lock.unlock()
             if isCancelled { break }
             if let seek { performSeek(seek) }
-            if pidChanged { audio = nil }
+            if pidChanged { audio = nil; audioEndPTS = 0; lateAudioRun = 0 }
 
             if clockStarted {
-                let now = Int64(CMTimeGetSeconds(synchronizer.currentTime()) * 90000)
-                let lead = lastVideoPTS - now
-                if lead > 108_000 || (isPaused && lead > 45_000) {
+                let wantsAudio = expectsAudio()
+                if !clockReleased,
+                   !wantsAudio || audioEndPTS >= firstVideoPTS + 27_000 || Date().timeIntervalSince(firstFrameWall) > 2.5 {
+                    clockReleased = true
+                    emit(.startClock(firstVideoPTS))
+                }
+                // Until the clock starts it is parked on the first picture.
+                let now = clockReleased ? Int64(CMTimeGetSeconds(synchronizer.currentTime()) * 90000) : firstVideoPTS
+                let videoLead = lastVideoPTS - now
+                // Broadcasts send video well ahead of the matching audio, so keep reading until
+                // both are buffered (with a cap on how far video may run ahead).
+                let audioLead = wantsAudio ? audioEndPTS - now : Int64.max
+                let enough = isPaused ? (videoLead > 45_000 && audioLead > 27_000) : (videoLead > 72_000 && audioLead > 36_000)
+                if enough || videoLead > 180_000 {
                     Thread.sleep(forTimeInterval: 0.01)
                     continue
                 }
                 // Behind real time (slow device / multiview): temporarily skip B-pictures.
-                if lead < -9_000 { adaptiveSkipB = true } else if lead > 30_000 { adaptiveSkipB = false }
+                if clockReleased {
+                    if videoLead < -9_000 { adaptiveSkipB = true } else if videoLead > 30_000 { adaptiveSkipB = false }
+                }
             }
 
             guard let chunk = source.read(at: readOffset, max: 188 * 256, timeout: 0.1) else { continue }
@@ -145,7 +171,7 @@ final class PipelineWorker: @unchecked Sendable {
             if Date().timeIntervalSince(infoSent) > 0.5 {
                 infoSent = Date()
                 emit(.info(info))
-                if clockStarted { emit(.frame(lastVideoPTS)) }
+                if clockStarted { emit(.progress(video: lastVideoPTS, audio: audioEndPTS)) }
             }
         }
     }
@@ -161,7 +187,10 @@ final class PipelineWorker: @unchecked Sendable {
         readOffset = seek.offset
         dropBefore = seek.dropBefore
         clockStarted = false
+        clockReleased = false
         lastVideoPTS = 0
+        audioEndPTS = 0
+        lateAudioRun = 0
     }
 
     private func programChanged(_ p: TSDemuxer.Program) {
@@ -199,6 +228,16 @@ final class PipelineWorker: @unchecked Sendable {
         return raw + ptsWrap
     }
 
+    /// Whether a playable audio track is selected, so the clock should wait for it.
+    private func expectsAudio() -> Bool {
+        lock.lock(); let pid = audioPID, on = audioEnabled; lock.unlock()
+        guard on, let pid, let track = program?.audio.first(where: { $0.pid == pid }) else { return false }
+        switch track.kind {
+        case .ac3, .eac3, .aacADTS, .mpegAudio: return true
+        default: return false
+        }
+    }
+
     // MARK: PES
 
     private func handlePES(_ pes: TSDemuxer.PES) {
@@ -221,14 +260,31 @@ final class PipelineWorker: @unchecked Sendable {
                 enqueueVideo(sb, pts: pts ?? lastVideoPTS)
             }
         } else if pes.kind.isAudio && pes.pid == pid && audioOn {
-            guard let rawPTS = pes.pts else { return }
-            let pts = unwrapPTS(rawPTS)
-            if let d = dropBefore, pts < d { return }
+            let pts = pes.pts.map(unwrapPTS)
+            if let d = dropBefore, let pts, pts < d { audio?.reset(); return }
             if audio == nil { audio = AudioPackager(kind: pes.kind) }
             guard let audio else { return }
-            for sb in audio.makeSampleBuffers(pes.payload, pts: pts) { audioRenderer.enqueue(sb) }
-            info.audioCodec = pes.kind.name
+            lock.lock(); let drc = dynamicRange; lock.unlock()
+            if audio.dynamicRange != drc { audio.dynamicRange = drc }
+            let now = clockReleased ? Int64(CMTimeGetSeconds(synchronizer.currentTime()) * 90000) : Int64.min
+            for sb in audio.makeSampleBuffers(pes.payload, pts: pts) {
+                audioRenderer.enqueue(sb)
+                let start = CMSampleBufferGetPresentationTimeStamp(sb).value
+                let duration = CMSampleBufferGetDuration(sb)
+                let end = start + (duration.isValid ? CMTimeConvertScale(duration, timescale: 90000, method: .default).value : 2880)
+                audioEndPTS = max(audioEndPTS, end)
+                // Audio that is already late is dropped by the renderer: notice a run of it.
+                if end < now { lateAudioRun += 1 } else { lateAudioRun = 0 }
+                if lateAudioRun >= 12, Date().timeIntervalSince(lastLateReport) > 5 {
+                    lastLateReport = Date()
+                    lateAudioRun = 0
+                    emit(.audioLate(start))
+                }
+            }
+            info.audioCodec = audio.decodesInApp ? "Dolby Digital" : pes.kind.name
             info.audioChannels = audio.channels
+            info.audioLayout = audio.layoutName
+            info.audioDecodedInApp = audio.decodesInApp
             info.sampleRate = audio.sampleRate
             if audioRenderer.status == .failed && !audio.pcmFallback {
                 audio.pcmFallback = true
@@ -298,6 +354,8 @@ final class PipelineWorker: @unchecked Sendable {
         if !clockStarted {
             clockStarted = true
             dropBefore = nil
+            firstVideoPTS = pts
+            firstFrameWall = Date()
             emit(.firstFrame(pts))
         }
     }

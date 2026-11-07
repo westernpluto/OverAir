@@ -329,8 +329,9 @@ enum AudioFrameParser {
     static let ac3Bitrates = [32, 40, 48, 56, 64, 80, 96, 112, 128, 160, 192, 224, 256, 320, 384, 448, 512, 576, 640]
     static let ac3ChannelCounts = [2, 1, 2, 3, 3, 4, 4, 5]
 
-    /// AC-3 and E-AC-3 frames (sync word 0x0B77).
-    static func dolbyFrames(_ d: [UInt8]) -> [Frame] {
+    /// AC-3 and E-AC-3 frames (sync word 0x0B77). `consumed` is where scanning stopped: the start
+    /// of a frame that continues in the next PES packet, or the last few unscanned bytes.
+    static func dolbyFrames(_ d: [UInt8]) -> (frames: [Frame], consumed: Int) {
         var out: [Frame] = []
         var i = 0
         while i + 7 < d.count {
@@ -357,6 +358,17 @@ enum AudioFrameParser {
                 let lfe = (word >> (15 - bit)) & 1
                 let ch = ac3ChannelCounts[acmod] + lfe
                 guard size > 0, i + size <= d.count else { break }
+                // A sync word inside audio data looks like a frame start: accept it only if the CRC
+                // holds or another frame follows straight after; otherwise keep scanning.
+                let followed = i + size + 1 < d.count ? (d[i + size] == 0x0B && d[i + size + 1] == 0x77) : nil
+                if followed != true {
+                    let valid = d.withUnsafeBytes { AC3Decoder.crcIsValid(UnsafeRawBufferPointer(rebasing: $0[i..<(i + size)]), size: size) }
+                    if !valid {
+                        if followed == nil { break }     // wait for more data before deciding
+                        i += 1
+                        continue
+                    }
+                }
                 out.append(Frame(range: i..<(i + size), sampleRate: ac3SampleRates[fscod], channels: ch, samplesPerFrame: 1536))
                 i += size
             } else {
@@ -380,13 +392,13 @@ enum AudioFrameParser {
                 i += size
             }
         }
-        return out
+        return (out, i)
     }
 
     static let aacRates = [96000, 88200, 64000, 48000, 44100, 32000, 24000, 22050, 16000, 12000, 11025, 8000, 7350]
 
     /// AAC ADTS frames. Returns frames whose range excludes the ADTS header, plus the AudioSpecificConfig.
-    static func adtsFrames(_ d: [UInt8]) -> (frames: [Frame], config: [UInt8]?) {
+    static func adtsFrames(_ d: [UInt8]) -> (frames: [Frame], config: [UInt8]?, consumed: Int) {
         var out: [Frame] = []
         var config: [UInt8]?
         var i = 0
@@ -405,11 +417,11 @@ enum AudioFrameParser {
             out.append(Frame(range: (i + header)..<(i + length), sampleRate: aacRates[srIndex], channels: max(channelConfig, 1), samplesPerFrame: 1024))
             i += length
         }
-        return (out, config)
+        return (out, config, i)
     }
 
     /// MPEG-1 Layer II audio frames.
-    static func mpegAudioFrames(_ d: [UInt8]) -> [Frame] {
+    static func mpegAudioFrames(_ d: [UInt8]) -> (frames: [Frame], consumed: Int) {
         let bitratesL2 = [0, 32, 48, 56, 64, 80, 96, 112, 128, 160, 192, 224, 256, 320, 384, 0]
         let rates = [44100, 48000, 32000, 0]
         var out: [Frame] = []
@@ -426,6 +438,68 @@ enum AudioFrameParser {
             out.append(Frame(range: i..<(i + size), sampleRate: sr, channels: ch, samplesPerFrame: 1152))
             i += size
         }
+        return (out, i)
+    }
+}
+
+/// Joins audio PES payloads into whole frames. Frames may straddle PES packets; each frame is
+/// timed from the PTS of the packet it starts in, or from the end of the frame before it.
+final class AudioFrameAssembler {
+    struct TimedFrame {
+        var bytes: [UInt8]
+        var pts: Int64
+        var frame: AudioFrameParser.Frame
+    }
+
+    let kind: TSDemuxer.Kind
+    private(set) var config: [UInt8]?     // AAC AudioSpecificConfig
+    private var pending: [UInt8] = []
+    private var nextPTS: Int64?
+
+    init(kind: TSDemuxer.Kind) { self.kind = kind }
+
+    func reset() {
+        pending.removeAll(keepingCapacity: true)
+        nextPTS = nil
+    }
+
+    func push(_ payload: [UInt8], pts: Int64?) -> [TimedFrame] {
+        let anchor = pending.count
+        pending.append(contentsOf: payload)
+        var pesPTS = pts
+        let frames: [AudioFrameParser.Frame]
+        let consumed: Int
+        switch kind {
+        case .ac3, .eac3:
+            (frames, consumed) = AudioFrameParser.dolbyFrames(pending)
+        case .aacADTS:
+            let r = AudioFrameParser.adtsFrames(pending)
+            frames = r.frames; consumed = r.consumed
+            if let c = r.config { config = c }
+        case .mpegAudio:
+            (frames, consumed) = AudioFrameParser.mpegAudioFrames(pending)
+        default:
+            pending.removeAll()
+            return []
+        }
+        var out: [TimedFrame] = []
+        for f in frames {
+            // ADTS frame ranges exclude the header; the frame starts where its header does.
+            let start = kind == .aacADTS ? max(0, f.range.lowerBound - 7) : f.range.lowerBound
+            let t: Int64
+            if let p = pesPTS, start >= anchor {
+                t = p
+                pesPTS = nil
+            } else if let n = nextPTS {
+                t = n
+            } else {
+                continue                                  // no timing yet: wait for a PTS
+            }
+            out.append(TimedFrame(bytes: Array(pending[f.range]), pts: t, frame: f))
+            nextPTS = t + Int64(f.samplesPerFrame) * 90000 / Int64(max(f.sampleRate, 1))
+        }
+        if consumed > 0 { pending.removeFirst(min(consumed, pending.count)) }
+        if pending.count > 65536 { reset() }
         return out
     }
 }

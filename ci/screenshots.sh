@@ -31,7 +31,7 @@ for n in sys.argv[1:]:
 shoot() { # udid, file-prefix
   local udid=$1 prefix=$2
   if ! xcrun simctl io "$udid" screenshot "$prefix.png" > /dev/null 2>&1; then
-    for d in 1 2; do xcrun simctl io "$udid" screenshot --display="$d" "$prefix-display$d.png" > /dev/null 2>&1 || true; done
+    for d in 1 3; do xcrun simctl io "$udid" screenshot --display="$d" "$prefix-display$d.png" > /dev/null 2>&1 || true; done
   fi
 }
 
@@ -44,7 +44,7 @@ launch() { # udid, scenario, log
     xcrun simctl launch --terminate-running-process --stdout="$3" --stderr="$3" "$1" com.overair.app > /dev/null 2>> "$OUT/launch-errors.txt"
 }
 
-SCENARIOS="live player player-mini guide recordings search settings multiview"
+SCENARIOS="live player player-mini guide program recordings search settings multiview"
 for entry in "duo:iPhone Duo" "iphone:iPhone 18 Pro:iPhone 17 Pro:iPhone 17"; do
   TAG=${entry%%:*}
   IFS=':' read -r -a NAMES <<< "${entry#*:}"
@@ -56,6 +56,7 @@ for entry in "duo:iPhone Duo" "iphone:iPhone 18 Pro:iPhone 17 Pro:iPhone 17"; do
   xcrun simctl boot "$UDID"
   xcrun simctl bootstatus "$UDID" -b > /dev/null
   xcrun simctl io "$UDID" enumerate > "$OUT/$TAG-displays.txt" 2>&1 || true
+  xcrun simctl help ui > "$OUT/simctl-ui-help.txt" 2>&1 || true
   xcrun simctl status_bar "$UDID" override --time "9:41" --batteryState charged --batteryLevel 100 --wifiBars 3 > /dev/null 2>&1 || true
   xcrun simctl install "$UDID" "$APP"
   for S in $SCENARIOS; do
@@ -65,7 +66,7 @@ for entry in "duo:iPhone Duo" "iphone:iPhone 18 Pro:iPhone 17 Pro:iPhone 17"; do
     echo "  $S"
   done
   xcrun simctl ui "$UDID" content_size accessibility-medium > /dev/null 2>&1 || true
-  for S in live player; do
+  for S in live player program; do
     launch "$UDID" "$S" "$OUT/$TAG-$S-largetext.log"
     sleep 12
     shoot "$UDID" "$OUT/$TAG-$S-largetext"

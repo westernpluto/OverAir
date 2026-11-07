@@ -52,9 +52,7 @@ struct LiveTVView: View {
         .sheet(isPresented: $showKeypad) {
             KeypadSheet { number in playback.tune(number: number) }.presentationDetents([.medium])
         }
-        .sheet(item: $detailProgram) { p in
-            NavigationStack { ProgramDetailView(program: p) }.presentationDetents([.medium, .large]).detailSheetPlacement()
-        }
+        .programSheet(item: $detailProgram)
         .navigationDestination(item: $channelPage) { ch in ChannelDetailView(channel: ch) }
         .overlay {
             if tuners.channels.isEmpty && !tuners.isDiscovering && tuners.connection != .connecting {

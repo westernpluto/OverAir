@@ -91,6 +91,7 @@ final class AppSettings {
     var liveCachingMs: Int { didSet { defaults.set(liveCachingMs, forKey: "liveCaching") } }
     var remoteCachingMs: Int { didSet { defaults.set(remoteCachingMs, forKey: "remoteCaching") } }
     var deinterlace: Bool { didSet { defaults.set(deinterlace, forKey: "deinterlace") } }
+    var reduceLoudSounds: Bool { didSet { defaults.set(reduceLoudSounds, forKey: "reduceLoud") } }
     var hardwareDecoding: Bool { didSet { defaults.set(hardwareDecoding, forKey: "hwDecode") } }
     var autoplayLastChannel: Bool { didSet { defaults.set(autoplayLastChannel, forKey: "autoplayLast") } }
     var showSignalOverlay: Bool { didSet { defaults.set(showSignalOverlay, forKey: "signalOverlay") } }
@@ -134,6 +135,7 @@ final class AppSettings {
         liveCachingMs = int("liveCaching", 1200)
         remoteCachingMs = int("remoteCaching", 3500)
         deinterlace = bool("deinterlace", true)
+        reduceLoudSounds = bool("reduceLoud", true)
         hardwareDecoding = bool("hwDecode", true)
         autoplayLastChannel = bool("autoplayLast", false)
         showSignalOverlay = bool("signalOverlay", false)

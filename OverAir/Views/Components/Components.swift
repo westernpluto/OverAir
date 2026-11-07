@@ -236,21 +236,23 @@ struct Artwork: View {
     var cornerRadius: CGFloat = 12
 
     var body: some View {
-        ZStack {
-            LinearGradient(colors: [Color(white: 0.15), Color(white: 0.08)], startPoint: .topLeading, endPoint: .bottomTrailing)
-            if let url {
-                AsyncImage(url: url, transaction: Transaction(animation: .easeIn(duration: 0.25))) { phase in
-                    switch phase {
-                    case let .success(img): img.resizable().scaledToFill()
-                    case .failure: placeholder
-                    default: Color.clear
+        // The gradient takes whatever size the caller gives; the picture is an overlay, so a wide
+        // image fills that frame instead of widening the layout around it.
+        LinearGradient(colors: [Color(white: 0.15), Color(white: 0.08)], startPoint: .topLeading, endPoint: .bottomTrailing)
+            .overlay {
+                if let url {
+                    AsyncImage(url: url, transaction: Transaction(animation: .easeIn(duration: 0.25))) { phase in
+                        switch phase {
+                        case let .success(img): img.resizable().scaledToFill()
+                        case .failure: placeholder
+                        default: Color.clear
+                        }
                     }
+                } else {
+                    placeholder
                 }
-            } else {
-                placeholder
             }
-        }
-        .clipShape(RoundedRectangle(cornerRadius: cornerRadius, style: .continuous))
+            .clipShape(RoundedRectangle(cornerRadius: cornerRadius, style: .continuous))
         .accessibilityHidden(true)
     }
 

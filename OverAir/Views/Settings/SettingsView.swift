@@ -185,6 +185,11 @@ struct AdvancedPlaybackView: View {
                 Text("Most HD channels broadcast 1080i. OverAir converts it to smooth 60 fps on the GPU.")
             }
             Section {
+                Toggle("Reduce Loud Sounds", isOn: $settings.reduceLoudSounds)
+            } footer: {
+                Text("Uses the loudness information broadcasters send with Dolby Digital audio, so loud scenes and commercials stay closer to the level of dialogue. Applies the next time you start a channel.")
+            }
+            Section {
                 Picker("Skip Back", selection: $settings.skipBackSeconds) {
                     ForEach([5, 10, 15, 30], id: \.self) { Text("\($0) seconds").tag($0) }
                 }

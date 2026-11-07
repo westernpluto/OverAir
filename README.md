@@ -41,6 +41,12 @@ A live TV app for the **HDHomeRun FLEX 4K** (and every other HDHomeRun tuner), b
 **Tools**
 - Live signal meters per tuner, channel scans, favorites and hidden channels, and device details.
 
+**Built-in player (no third-party code)**
+- MPEG-2 video is decoded in software, and 1080i is converted to smooth 60 fps on the GPU. H.264 and HEVC use the hardware decoder.
+- **Dolby Digital (AC-3)**, the audio on every ATSC 1.0 channel and HDHomeRun recording, is decoded inside the app from the ATSC A/52 standard. It's checked against FFmpeg on real Dolby streams. 5.1 is mixed down to stereo, and *Reduce Loud Sounds* applies the broadcaster's own loudness control.
+- Sound and picture stay in sync on live TV. Broadcasts send each moment's picture before its sound, so the player holds the first picture until the sound has caught up, instead of discarding it as late.
+- Pause and rewind live TV, captions (CEA-608), Picture in Picture.
+
 ## Building the .ipa with Xcode 27.1
 
 1. Open `OverAir.xcodeproj` in Xcode 27.1 or later. There are no dependencies to download.

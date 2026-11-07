@@ -29,6 +29,8 @@ struct StreamInfo: Equatable {
     var deinterlacing = false
     var audioCodec: String?
     var audioChannels = 0
+    var audioLayout: String?
+    var audioDecodedInApp = false
     var sampleRate = 0
     var mbps: Double = 0
     var lateFrames = 0
@@ -45,6 +47,14 @@ struct StreamInfo: Equatable {
     }
 
     var channelLabel: String {
+        if let audioLayout {
+            switch audioLayout {
+            case "1.0": return "Mono"
+            case "2.0": return "Stereo"
+            case "1+1": return "Dual Mono"
+            default: return audioLayout
+            }
+        }
         switch audioChannels {
         case 0: return "—"
         case 1: return "Mono"
@@ -121,6 +131,8 @@ final class TVPlayer {
     var audioEnabled = true { didSet { worker?.setAudioEnabled(audioEnabled); if !audioEnabled { audioRenderer.flush() } } }
     /// Convert interlaced broadcasts to smooth 60 fps.
     var deinterlace = true { didSet { worker?.setDeinterlace(deinterlace) } }
+    /// Apply the broadcaster's dynamic range control to Dolby Digital (quieter loud parts, clearer dialogue).
+    var reduceLoudSounds = true { didSet { worker?.setDynamicRange(reduceLoudSounds ? 1 : 0) } }
 
     let videoView = SampleBufferVideoView()
 
@@ -135,7 +147,8 @@ final class TVPlayer {
     @ObservationIgnored private var lastFramePTS: Int64 = 0
     @ObservationIgnored private var lastFrameWall = Date()     // when the decoder last produced a new frame
     @ObservationIgnored private var lastReanchor = Date.distantPast
-    @ObservationIgnored private var stalled = false             // buffering because the stream ran dry (not a seek)
+    @ObservationIgnored private var stalled = false
+    @ObservationIgnored private var progressCount = 0             // buffering because the stream ran dry (not a seek)
     @ObservationIgnored private var sourceURL: URL?
     @ObservationIgnored private var totalBytes: Int64?
     @ObservationIgnored private var pendingCaptions: [(pts: Int64, rows: [CEA608Decoder.Row])] = []
@@ -226,6 +239,7 @@ final class TVPlayer {
         w.setLowPower(lowPower)
         w.setAudioEnabled(audioEnabled)
         w.setDeinterlace(deinterlace)
+        w.setDynamicRange(reduceLoudSounds ? 1 : 0)
         w.onEvent = { [weak self] event in
             DispatchQueue.main.async { MainActor.assumeIsolated { self?.handle(event, generation: gen) } }
         }
@@ -362,7 +376,7 @@ final class TVPlayer {
         guard gen == generation else { return }
         #if DEBUG
         switch event {
-        case .frame, .captions: break
+        case .progress, .captions: break
         case let .info(i): debugLog("info \(i.videoCodec ?? "-") \(i.width)x\(i.height) \(i.interlaced ? "i" : "p") deint=\(i.deinterlacing) audio=\(i.audioCodec ?? "-") \(i.audioChannels)ch")
         default: debugLog("\(event)")
         }
@@ -386,15 +400,35 @@ final class TVPlayer {
                 info.audioCodec = "\(audio.codec) (not supported)"
             }
         case let .firstFrame(pts):
+            // Show the first picture now; the clock starts once audio has caught up (.startClock).
             lastFramePTS = pts
             lastFrameWall = Date()
             stalled = false
-            synchronizer.setRate(state == .paused ? 0 : rate, time: CMTime(value: pts, timescale: 90000))
-            if state != .paused { state = .playing }
+            synchronizer.setRate(0, time: CMTime(value: pts, timescale: 90000))
             if firstPTS == nil && !isLive { firstPTS = pts }
-        case let .frame(pts):
-            if pts > lastFramePTS { lastFrameWall = Date() }
-            lastFramePTS = pts
+        case let .startClock(pts):
+            lastFrameWall = Date()
+            lastReanchor = Date()
+            if state == .paused {
+                synchronizer.setRate(0, time: CMTime(value: pts, timescale: 90000))
+            } else {
+                synchronizer.setRate(rate, time: CMTime(value: pts, timescale: 90000))
+                state = .playing
+            }
+        case let .audioLate(pts):
+            guard state == .playing, synchronizer.rate > 0 else { break }
+            lastReanchor = Date()
+            synchronizer.setRate(rate, time: CMTime(value: pts - 18000, timescale: 90000))
+        case let .progress(video, audio):
+            if video > lastFramePTS { lastFrameWall = Date() }
+            lastFramePTS = video
+            #if DEBUG
+            progressCount += 1
+            if progressCount % 6 == 0 {
+                let now = Int64(CMTimeGetSeconds(synchronizer.currentTime()) * 90000)
+                debugLog("lead video \(Double(video - now) / 90000)s audio \(audio > 0 ? String(Double(audio - now) / 90000) : "-")s renderer \(audioRenderer.status.rawValue) \(audioRenderer.error?.localizedDescription ?? "")")
+            }
+            #endif
         case let .info(newInfo):
             var merged = newInfo
             merged.mbps = (feeder?.bytesPerSecond ?? 0) * 8 / 1_000_000
