@@ -44,7 +44,7 @@ launch() { # udid, scenario, log
     xcrun simctl launch --terminate-running-process --stdout="$3" --stderr="$3" "$1" com.overair.app > /dev/null 2>> "$OUT/launch-errors.txt"
 }
 
-SCENARIOS="live player player-mini guide program recordings search settings multiview"
+SCENARIOS="live player player-atsc3 player-mini guide program recordings search settings multiview"
 for entry in "duo:iPhone Duo" "iphone:iPhone 18 Pro:iPhone 17 Pro:iPhone 17"; do
   TAG=${entry%%:*}
   IFS=':' read -r -a NAMES <<< "${entry#*:}"

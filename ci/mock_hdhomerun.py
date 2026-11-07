@@ -17,6 +17,7 @@ CHANNELS = [
     ("7.1", "ABC7-HD", "1080i", "ABC"), ("9.1", "MeTV", "480i", "MeTV"), ("11.1", "PBS-HD", "1080i", "PBS"),
     ("13.1", "UniMas", "480i", "UNI"), ("20.1", "CW", "1080i", "CW"), ("26.1", "H&I", "480i", "HI"),
     ("32.1", "ION", "720p", "ION"),
+    ("34.1", "KDAF-3", "atsc3", "CW"),
 ]
 FAVORITE = {"2.1", "4.1", "7.1"}
 
@@ -56,7 +57,8 @@ def guide(start):
     return out
 
 def lineup():
-    return [{"GuideNumber": n, "GuideName": nm, "VideoCodec": "MPEG2", "AudioCodec": "AC3", "HD": 1 if f != "480i" else 0,
+    return [{"GuideNumber": n, "GuideName": nm, "VideoCodec": "HEVC" if f == "atsc3" else "MPEG2",
+             "AudioCodec": "AC4" if f == "atsc3" else "AC3", "HD": 1 if f != "480i" else 0,
              "Favorite": 1 if n in FAVORITE else 0, "URL": f"{BASE}/auto/v{n}"} for n, nm, f, _ in CHANNELS]
 
 def discover():

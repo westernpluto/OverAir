@@ -420,6 +420,61 @@ enum AudioFrameParser {
         return (out, config, i)
     }
 
+    /// AC-4 sync frames (0xAC40, or 0xAC41 with a CRC). `samplesPerFrame` is the frame duration
+    /// in 90 kHz ticks and `sampleRate` is 90000, so frame timing works out in PTS units.
+    static func ac4Frames(_ d: [UInt8]) -> (frames: [Frame], consumed: Int) {
+        var out: [Frame] = []
+        var i = 0
+        while i + 8 <= d.count {
+            guard d[i] == 0xAC && (d[i + 1] == 0x40 || d[i + 1] == 0x41) else { i += 1; continue }
+            var size = Int(d[i + 2]) << 8 | Int(d[i + 3])
+            var header = 4
+            if size == 0xFFFF {
+                guard i + 7 <= d.count else { break }
+                size = Int(d[i + 4]) << 16 | Int(d[i + 5]) << 8 | Int(d[i + 6])
+                header = 7
+            }
+            let total = header + size + (d[i + 1] == 0x41 ? 2 : 0)
+            guard size > 0, i + total <= d.count else { break }
+            // A sync word inside frame data: only accept it if another frame (or the end) follows.
+            if i + total + 1 < d.count && !(d[i + total] == 0xAC && (d[i + total + 1] & 0xFE) == 0x40) {
+                i += 1
+                continue
+            }
+            out.append(Frame(range: i..<(i + total), sampleRate: 90000, channels: 2,
+                             samplesPerFrame: ac4FrameTicks(d, at: i + header)))
+            i += total
+        }
+        return (out, i)
+    }
+
+    /// Duration of an AC-4 frame in 90 kHz ticks, from its table of contents.
+    static func ac4FrameTicks(_ d: [UInt8], at offset: Int) -> Int {
+        guard offset + 4 <= d.count else { return 3003 }
+        var bits = 0, pos = 0
+        func read(_ n: Int) -> Int {
+            var v = 0
+            for _ in 0..<n {
+                let byte = offset + (pos >> 3)
+                let bit = byte < d.count ? Int(d[byte] >> (7 - UInt8(pos & 7))) & 1 : 0
+                v = (v << 1) | bit
+                pos += 1
+            }
+            return v
+        }
+        let version = read(2)
+        if version == 3 { return 3003 }
+        _ = read(10)                                     // sequence_counter
+        if read(1) == 1 { if read(3) > 0 { _ = read(2) } } // wait_frames
+        bits = read(1)                                   // fs_index
+        let rateIndex = read(4)
+        let base = AC4Tables.frame_len_base_48khz[rateIndex]
+        guard base > 0 else { return 3003 }
+        let r = AC4Decoder.resamplingRatios[rateIndex]
+        let rate = bits == 1 ? 48000.0 : 44100.0
+        return Int((Double(base) * Double(r.0) / Double(r.1) / rate * 90000).rounded())
+    }
+
     /// MPEG-1 Layer II audio frames.
     static func mpegAudioFrames(_ d: [UInt8]) -> (frames: [Frame], consumed: Int) {
         let bitratesL2 = [0, 32, 48, 56, 64, 80, 96, 112, 128, 160, 192, 224, 256, 320, 384, 0]
@@ -478,6 +533,8 @@ final class AudioFrameAssembler {
             if let c = r.config { config = c }
         case .mpegAudio:
             (frames, consumed) = AudioFrameParser.mpegAudioFrames(pending)
+        case .ac4:
+            (frames, consumed) = AudioFrameParser.ac4Frames(pending)
         default:
             pending.removeAll()
             return []

@@ -385,7 +385,7 @@ final class TVPlayer {
         case let .program(program):
             audioTracks = program.audio.map {
                 AudioTrack(id: $0.pid, language: $0.language, codec: $0.kind.name, isDescription: $0.isAudioDescription,
-                           supported: $0.kind != .ac4 && $0.kind != .aacLATM)
+                           supported: $0.kind != .aacLATM)
             }
             if selectedAudio == nil || !audioTracks.contains(where: { $0.id == selectedAudio }) {
                 let preferred = Locale.preferredLanguages.compactMap { Locale(identifier: $0).language.languageCode?.identifier(.alpha3) }

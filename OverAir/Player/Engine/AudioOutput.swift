@@ -13,8 +13,9 @@ final class AudioPackager {
     private var formatKey = ""
     private var converter: PCMConverter?
     private var ac3: AC3Decoder?
+    private var ac4: AC4Decoder?
     private var pcmFormat: CMAudioFormatDescription?
-    private var pcmRate = 0
+    private var pcmRate: Double = 0
     var pcmFallback = false
     /// Broadcaster dynamic range control for Dolby Digital: 0 = off, 1 = full.
     var dynamicRange: Float = 1 { didSet { ac3?.dynamicRange = dynamicRange } }
@@ -22,6 +23,8 @@ final class AudioPackager {
     private(set) var channels = 0
     private(set) var layoutName: String?
     private(set) var decodesInApp = false
+    /// Display name of the in-app decoder's format.
+    var codecName: String { kind == .ac4 ? "Dolby AC-4" : (kind == .ac3 ? "Dolby Digital" : kind.name) }
 
     private let assembler: AudioFrameAssembler
 
@@ -32,12 +35,17 @@ final class AudioPackager {
             ac3 = AC3Decoder()
             decodesInApp = true
         }
+        if kind == .ac4 {
+            ac4 = AC4Decoder()
+            decodesInApp = true
+        }
     }
 
     func reset() {
         converter = nil
         assembler.reset()
         ac3?.reset()
+        ac4?.reset()
     }
 
     func makeSampleBuffers(_ payload: [UInt8], pts: Int64?) -> [CMSampleBuffer] {
@@ -52,7 +60,27 @@ final class AudioPackager {
                     channels = f.channelCount
                     layoutName = f.layoutName
                 }
-                return makePCMBuffer(pcm, rate: ac3.format?.sampleRate ?? 48000, pts: tf.pts)
+                return makePCMBuffer(pcm, rate: Double(ac3.format?.sampleRate ?? 48000), pts: tf.pts)
+            }
+        }
+
+        if let ac4 {
+            return frames.compactMap { (tf) -> CMSampleBuffer? in
+                do {
+                    guard let f = try tf.bytes.withUnsafeBytes({ try ac4.decodeFrame($0) }) else { return nil }
+                    if let fmt = ac4.format {
+                        sampleRate = fmt.sampleRate
+                        channels = fmt.channelCount
+                        layoutName = fmt.layoutName
+                    }
+                    lastAC4 = (f.samples, f.sampleRate)
+                    let pcm = StereoDownmix.mix(f.channels, samples: f.samples)
+                    return makePCMBuffer(pcm, rate: f.sampleRate, pts: tf.pts)
+                } catch {
+                    // Keep the timeline continuous: a damaged frame plays as silence.
+                    guard let last = lastAC4 else { return nil }
+                    return makePCMBuffer([Float](repeating: 0, count: last.samples * 2), rate: last.rate, pts: tf.pts)
+                }
             }
         }
 
@@ -114,9 +142,11 @@ final class AudioPackager {
         }
     }
 
-    private func makePCMBuffer(_ samples: [Float], rate: Int, pts: Int64) -> CMSampleBuffer? {
+    private var lastAC4: (samples: Int, rate: Double)?
+
+    private func makePCMBuffer(_ samples: [Float], rate: Double, pts: Int64) -> CMSampleBuffer? {
         if pcmFormat == nil || pcmRate != rate {
-            var asbd = AudioStreamBasicDescription(mSampleRate: Float64(rate), mFormatID: kAudioFormatLinearPCM,
+            var asbd = AudioStreamBasicDescription(mSampleRate: rate, mFormatID: kAudioFormatLinearPCM,
                                                    mFormatFlags: kAudioFormatFlagIsFloat | kAudioFormatFlagIsPacked,
                                                    mBytesPerPacket: 8, mFramesPerPacket: 1, mBytesPerFrame: 8,
                                                    mChannelsPerFrame: 2, mBitsPerChannel: 32, mReserved: 0)
@@ -153,6 +183,43 @@ final class AudioPackager {
               let block else { return nil }
         CMBlockBufferReplaceDataBytes(with: raw.baseAddress!, blockBuffer: block, offsetIntoDestination: 0, dataLength: raw.count)
         return block
+    }
+}
+
+/// Stereo (Lo/Ro) downmix of decoded speaker channels (A/52 7.8.2 coefficients), normalised for
+/// headroom, lifted back for multichannel programmes and caught by a soft limiter.
+enum StereoDownmix {
+    /// `channels`: L, R, C, LFE, Ls, Rs (nil where absent). Returns interleaved stereo.
+    static func mix(_ channels: [[Float]?], samples n: Int) -> [Float] {
+        let l = channels[0], r = channels[1], c = channels[2], ls = channels[4], rs = channels[5]
+        var out = [Float](repeating: 0, count: n * 2)
+        guard let l else { return out }
+        if r == nil && c == nil {
+            for i in 0..<n { out[2 * i] = l[i]; out[2 * i + 1] = l[i] }   // mono
+            return out
+        }
+        let clev: Float = c != nil ? 0.7071 : 0
+        let slev: Float = (ls != nil || rs != nil) ? 0.7071 : 0
+        let norm = 1 / (1 + clev + slev)
+        let makeup: Float = (c != nil || ls != nil) ? 1.6 : 1
+        let g = norm * makeup
+        let rr = r ?? l
+        for i in 0..<n {
+            var lo = l[i], ro = rr[i]
+            if let c { lo += clev * c[i]; ro += clev * c[i] }
+            if let ls { lo += slev * ls[i] }
+            if let rs { ro += slev * rs[i] }
+            out[2 * i] = softLimit(lo * g)
+            out[2 * i + 1] = softLimit(ro * g)
+        }
+        return out
+    }
+
+    @inline(__always) static func softLimit(_ x: Float) -> Float {
+        let a = abs(x)
+        guard a > 0.85 else { return x }
+        let limited = 0.85 + 0.15 * Float(tanh(Double((a - 0.85) / 0.15)))
+        return x < 0 ? -limited : limited
     }
 }
 

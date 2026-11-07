@@ -43,6 +43,7 @@ A live TV app for the **HDHomeRun FLEX 4K** (and every other HDHomeRun tuner), b
 
 **Built-in player (no third-party code)**
 - MPEG-2 video is decoded in software, and 1080i is converted to smooth 60 fps on the GPU. H.264 and HEVC use the hardware decoder.
+- **Dolby AC-4**, the audio on ATSC 3.0 (NextGen TV) channels, is decoded inside the app too, including 5.1 at the 29.97 fps frame rate broadcasters use.
 - **Dolby Digital (AC-3)**, the audio on every ATSC 1.0 channel and HDHomeRun recording, is decoded inside the app from the ATSC A/52 standard. It's checked against FFmpeg on real Dolby streams. 5.1 is mixed down to stereo, and *Reduce Loud Sounds* applies the broadcaster's own loudness control.
 - Sound and picture stay in sync on live TV. Broadcasts send each moment's picture before its sound, so the player holds the first picture until the sound has caught up, instead of discarding it as late.
 - Pause and rewind live TV, captions (CEA-608), Picture in Picture.
@@ -72,10 +73,10 @@ When unfolded, the Duo reports a *regular* width, and OverAir switches to its si
 ## Notes & limitations
 
 - **Guide data and DVR rules** come from SiliconDust's cloud, using your tuner's DeviceAuth. Extended guide data and the DVR need an active HDHomeRun DVR subscription, as with the official app.
-- **ATSC 3.0:** HEVC video plays. Some stations use **AC-4 audio** or **DRM-encrypted** streams that no third-party player can decode. These channels are labeled. DRM channels are hidden by default.
+- **ATSC 3.0:** HEVC video plays with the hardware decoder. **Dolby AC-4** audio is decoded in the app (see below). **DRM-encrypted** stations can't be played by any third-party app; they are labeled and hidden by default.
 - **UDP broadcast discovery** on iOS needs Apple's multicast entitlement, which personal signing can't get. OverAir falls back to the cloud lookup and the subnet sweep, which work with any signing.
 - **Recording to iPhone** needs OverAir to stay running: open, or playing audio in the background. For scheduled, unattended recordings use HDHomeRun storage.
-- ATSC 3.0 stations using **AC-4 audio** play video only. iOS has no AC-4 decoder, and OverAir labels those tracks.
+- **AC-4 (ATSC 3.0 audio)** is decoded by a Swift port of the AC-4 decoder from [ffmpeg-with-ac4](https://github.com/funnymanva/ffmpeg-with-ac4) (Paul B Mahol's FFmpeg patch), with fixes from ETSI TS 103 190-1. Those files (`OverAir/Player/Engine/AC4/`) are licensed under the **LGPL 2.1 or later**. It decodes the main presentation in mono, stereo and 5.1. Not yet supported: A-SPX high-frequency reconstruction (audio is limited to the core band, about 12 kHz), A-CPL parametric channels, object-based (immersive) audio and the speech coding tool. Checked on three US ATSC 3.0 captures: every frame decodes except 4 of 1,348 in one stream.
 
 OverAir is independent and not affiliated with SiliconDust. HDHomeRun is a trademark of SiliconDust USA Inc.
 

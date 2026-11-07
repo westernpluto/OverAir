@@ -233,7 +233,7 @@ final class PipelineWorker: @unchecked Sendable {
         lock.lock(); let pid = audioPID, on = audioEnabled; lock.unlock()
         guard on, let pid, let track = program?.audio.first(where: { $0.pid == pid }) else { return false }
         switch track.kind {
-        case .ac3, .eac3, .aacADTS, .mpegAudio: return true
+        case .ac3, .eac3, .ac4, .aacADTS, .mpegAudio: return true
         default: return false
         }
     }
@@ -281,7 +281,7 @@ final class PipelineWorker: @unchecked Sendable {
                     emit(.audioLate(start))
                 }
             }
-            info.audioCodec = audio.decodesInApp ? "Dolby Digital" : pes.kind.name
+            info.audioCodec = audio.codecName
             info.audioChannels = audio.channels
             info.audioLayout = audio.layoutName
             info.audioDecodedInApp = audio.decodesInApp

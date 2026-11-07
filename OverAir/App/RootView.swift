@@ -87,6 +87,8 @@ struct RootView: View {
             scenarioProgram = tuners.channels.lazy.compactMap { guide.nowPlaying($0.number) }.first
         case "player", "player-tips":
             if let ch = tuners.channels.first { playback.play(ch) }
+        case "player-atsc3":
+            if let ch = tuners.channels.first(where: { $0.isATSC3 }) ?? tuners.channels.first { playback.play(ch) }
         case "player-mini":
             if let ch = tuners.channels.first { playback.play(ch, expand: false) }
         case "multiview":
