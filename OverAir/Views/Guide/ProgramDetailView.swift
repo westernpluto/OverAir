@@ -52,7 +52,8 @@ struct ProgramDetailView: View {
         .ignoresSafeArea(edges: .top)
         .toolbar {
             ToolbarItem(placement: .cancellationAction) {
-                Button { dismiss() } label: { Image(systemName: "xmark.circle.fill").symbolRenderingMode(.hierarchical).font(.title2) }
+                // The standard close button: the system draws it as a glass circle that reads over artwork.
+                Button("Close", systemImage: "xmark") { dismiss() }
             }
         }
         .task {
