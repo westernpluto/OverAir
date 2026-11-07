@@ -64,7 +64,7 @@ Requires iOS 18 or later.
 iPhone Duo shows apps full screen on its inner display only if they were built with the **iOS 27.1 SDK**. Apps built with an older SDK open in a letterboxed, phone-sized window with black bars, whatever their project settings say.
 
 - Build the IPA on your Mac with **Xcode 27.1**. Check with `xcodebuild -version`, and switch with `sudo xcode-select -s /Applications/Xcode.app` if needed.
-- The GitHub Actions workflow runs on GitHub's `xcode-27` runner image and selects Xcode 27.1, so its `OverAir-unsigned-ipa` artifact is full screen on the Duo too. If a build ever falls back to an older SDK, the artifact name ends in `…-letterboxed-on-Duo`.
+- The GitHub Actions workflow runs on GitHub's `xcode-27` runner image and uses the newest Xcode 27.x installed (27.1 or later; currently 27.2), so its `OverAir-unsigned-ipa` artifact is full screen on the Duo too. If a build ever falls back to an older SDK, the artifact name ends in `…-letterboxed-on-Duo`.
 
 When unfolded, the Duo reports a *regular* width, and OverAir switches to its sidebar layout with favorites.
 
