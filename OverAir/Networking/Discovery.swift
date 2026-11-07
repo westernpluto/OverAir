@@ -18,6 +18,7 @@ enum Discovery {
                             progress: (@Sendable (Progress) -> Void)? = nil) async -> [HDHRDevice] {
         var found: [String: HDHRDevice] = [:]
         var candidateHosts = Set<String>(knownHosts)
+        if let testHost = ProcessInfo.processInfo.environment["OVERAIR_DEVICE"] { candidateHosts.insert(testHost) }
 
         progress?(Progress(phase: "Asking SiliconDust cloud…", fraction: 0.05))
         async let cloud = cloudCandidates()

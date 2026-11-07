@@ -84,7 +84,13 @@ final class TVPlayer {
         var isLoading: Bool { self == .opening || self == .buffering }
     }
 
-    private(set) var state: State = .idle
+    private(set) var state: State = .idle {
+        didSet {
+            #if DEBUG
+            if oldValue != state { print("[TVPlayer] state \(state)") }
+            #endif
+        }
+    }
     private(set) var isLive = true
     /// Recordings: seconds from the start. Live: seconds from the oldest buffered moment.
     private(set) var position: Double = 0
@@ -348,6 +354,12 @@ final class TVPlayer {
 
     private func handle(_ event: PipelineWorker.Event, generation gen: Int) {
         guard gen == generation else { return }
+        #if DEBUG
+        switch event {
+        case .frame, .info, .captions: break
+        default: print("[TVPlayer] \(event)")
+        }
+        #endif
         switch event {
         case let .program(program):
             audioTracks = program.audio.map {

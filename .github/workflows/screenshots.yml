@@ -1,0 +1,42 @@
+name: Simulator screenshots
+
+on:
+  push:
+    branches: [ "claude/**" ]
+  workflow_dispatch:
+
+jobs:
+  screenshots:
+    runs-on: xcode-27
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Select newest Xcode
+        run: |
+          XCODE=$(ls -d /Applications/Xcode_27.[1-9]*.app 2>/dev/null | grep -v -i beta | sort -V | tail -1 || true)
+          [ -z "$XCODE" ] && XCODE=$(ls -d /Applications/Xcode*.app | grep -v -i beta | sort -V | tail -1)
+          sudo xcode-select -s "$XCODE"
+          xcodebuild -version
+
+      - name: Test media
+        run: |
+          which ffmpeg || brew install ffmpeg
+          ./ci/make_media.sh ci/media
+
+      - name: Build for simulator
+        run: |
+          set -o pipefail
+          xcodebuild -project OverAir.xcodeproj -scheme OverAir -configuration Debug \
+            -sdk iphonesimulator -destination 'generic/platform=iOS Simulator' \
+            -derivedDataPath build/sim CODE_SIGNING_ALLOWED=NO build > build-sim.log 2>&1 || { grep -E -A3 "error:" build-sim.log | head -100; exit 1; }
+          tail -2 build-sim.log
+
+      - name: Capture screens
+        run: ./ci/screenshots.sh
+
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: screenshots
+          path: build/screenshots

@@ -2,8 +2,13 @@ import Foundation
 
 /// SiliconDust cloud services: discovery, guide data and DVR rule management.
 enum CloudAPI {
-    static let apiBase = URL(string: "https://api.hdhomerun.com/api")!
-    static let discoverURL = URL(string: "https://ipv4-api.hdhomerun.com/discover")!
+    /// Overridable for the simulator test server (OVERAIR_API_BASE).
+    static var apiBase: URL {
+        ProcessInfo.processInfo.environment["OVERAIR_API_BASE"].flatMap(URL.init(string:)) ?? URL(string: "https://api.hdhomerun.com/api")!
+    }
+    static var discoverURL: URL {
+        ProcessInfo.processInfo.environment["OVERAIR_CLOUD_DISCOVER"].flatMap(URL.init(string:)) ?? URL(string: "https://ipv4-api.hdhomerun.com/discover")!
+    }
 
     static func discover() async throws -> [CloudDiscoverEntry] {
         try await HTTP.get(discoverURL, timeout: 5)

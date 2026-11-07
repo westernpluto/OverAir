@@ -54,6 +54,12 @@ struct RootView: View {
     private func boot() async {
         guard !didBoot else { return }
         didBoot = true
+        let scenario = ProcessInfo.processInfo.environment["OVERAIR_SCENARIO"]
+        if scenario != nil {
+            settings.playerTipsSeen = scenario == "player-tips" ? false : true
+            settings.guideTipsSeen = true
+            if !tuners.hasDevice { await tuners.discover() }
+        }
         if tuners.hasDevice {
             await tuners.connect()
             async let g: Void = guide.load(deviceAuth: tuners.deviceAuth, hours: settings.guideHours)
@@ -62,6 +68,25 @@ struct RootView: View {
             if settings.autoplayLastChannel, let last = settings.lastChannel, let ch = tuners.channel(last) {
                 playback.play(ch, expand: false)
             }
+        }
+        if let scenario { runScenario(scenario) }
+    }
+
+    /// Screens used by the automated simulator screenshots (OVERAIR_SCENARIO).
+    private func runScenario(_ name: String) {
+        if settings.favorites.isEmpty { settings.favorites = Array(tuners.channels.prefix(3).map(\.number)) }
+        switch name {
+        case "guide": tab = .guide
+        case "recordings": tab = .dvr
+        case "search": tab = .search
+        case "settings": tab = .settings
+        case "player", "player-tips":
+            if let ch = tuners.channels.first { playback.play(ch) }
+        case "player-mini":
+            if let ch = tuners.channels.first { playback.play(ch, expand: false) }
+        case "multiview":
+            playback.openMultiview(with: Array(tuners.channels.prefix(4)))
+        default: tab = .live
         }
     }
 
