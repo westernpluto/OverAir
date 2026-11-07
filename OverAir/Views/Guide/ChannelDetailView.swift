@@ -106,6 +106,7 @@ struct ChannelDetailView: View {
         .sheet(item: $selected) { p in
             NavigationStack { ProgramDetailView(program: p) }
                 .presentationDetents([.medium, .large])
+                .detailSheetPlacement()
         }
     }
 

@@ -31,6 +31,7 @@ struct SearchView: View {
         .sheet(item: $selected) { p in
             NavigationStack { ProgramDetailView(program: p) }
                 .presentationDetents([.medium, .large])
+                .detailSheetPlacement()
         }
         .navigationDestination(for: Genre.self) { g in CategoryListingView(genre: g) }
         .navigationDestination(for: Channel.self) { ch in ChannelDetailView(channel: ch) }
@@ -254,6 +255,7 @@ struct CategoryListingView: View {
         .sheet(item: $selected) { p in
             NavigationStack { ProgramDetailView(program: p) }
                 .presentationDetents([.medium, .large])
+                .detailSheetPlacement()
         }
     }
 }

@@ -96,3 +96,16 @@ extension EnvironmentValues {
     /// True while iPhone Duo is partially folded and the player's controls sit beside the video.
     @Entry var playerControlsSeparated: Bool = false
 }
+
+extension View {
+    /// On wide displays (iPhone Duo open, iPad) present detail sheets at the trailing edge so the
+    /// content they came from — the guide grid, the channel list — stays visible beside them.
+    @ViewBuilder
+    func detailSheetPlacement() -> some View {
+        if #available(iOS 27.0, *) {
+            self.presentationPlacement(.trailing)
+        } else {
+            self
+        }
+    }
+}

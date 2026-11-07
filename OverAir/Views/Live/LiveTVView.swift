@@ -51,7 +51,7 @@ struct LiveTVView: View {
             KeypadSheet { number in playback.tune(number: number) }.presentationDetents([.medium])
         }
         .sheet(item: $detailProgram) { p in
-            NavigationStack { ProgramDetailView(program: p) }.presentationDetents([.medium, .large])
+            NavigationStack { ProgramDetailView(program: p) }.presentationDetents([.medium, .large]).detailSheetPlacement()
         }
         .navigationDestination(item: $channelPage) { ch in ChannelDetailView(channel: ch) }
         .overlay {
