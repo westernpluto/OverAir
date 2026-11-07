@@ -98,7 +98,9 @@ struct LiveTVView: View {
 
     private func channels(now: Date) -> [Channel] {
         switch filter {
-        case .all: return tuners.visibleChannels
+        case .all:
+            // Favorites already have their own row above, so list channels in number order.
+            return tuners.visibleChannels.sorted { $0.sortKey.lexicographicallyPrecedes($1.sortKey) }
         case .favorites: return tuners.favoriteChannels
         case let .genre(g): return tuners.visibleChannels.filter { guide.nowPlaying($0.number, at: now)?.genres.contains(g) ?? false }
         }
