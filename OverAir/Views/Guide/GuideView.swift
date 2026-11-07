@@ -15,12 +15,12 @@ struct GuideView: View {
     @State private var position = ScrollPosition(idType: Int.self)
     @State private var viewport = CGRect(x: 0, y: 0, width: 400, height: 800)
     @State private var selected: GuideProgram?
-    @State private var zoom: Double = 1
+    @State private var channelPage: Channel?
     @State private var didInitialScroll = false
 
-    private var pointsPerMinute: CGFloat { (hSize == .regular ? 6.5 : 5) * zoom }
+    private var pointsPerMinute: CGFloat { hSize == .regular ? 6.5 : 5 }
     private var rowHeight: CGFloat { settings.guideRowHeight }
-    private var channelColumnWidth: CGFloat { hSize == .regular ? 120 : 84 }
+    private var channelColumnWidth: CGFloat { hSize == .regular ? 128 : 84 }
     private let headerHeight: CGFloat = 34
 
     private var start: Date { GuideStore.windowStart().addingTimeInterval(-1800) }
@@ -32,7 +32,9 @@ struct GuideView: View {
 
     var body: some View {
         VStack(spacing: 0) {
+            dayBar
             filterBar
+            if !settings.guideTipsSeen && guide.hasData { tipBanner }
             Divider()
             if !guide.hasData {
                 if guide.isLoading {
@@ -44,6 +46,10 @@ struct GuideView: View {
                         Task { await guide.load(deviceAuth: tuners.deviceAuth, hours: settings.guideHours, force: true) }
                     }
                 }
+            } else if rows.isEmpty {
+                EmptyStateView(symbol: "star", title: "No Favorites",
+                               message: "Add favorites from Live TV, or turn off the Favorites filter.",
+                               actionTitle: "Show All Channels") { favoritesOnly = false }
             } else {
                 NowTicker(interval: 30) { now in grid(now: now) }
             }
@@ -51,43 +57,128 @@ struct GuideView: View {
         .navigationTitle("Guide")
         .navigationBarTitleDisplayMode(.inline)
         .toolbar {
-            ToolbarItemGroup(placement: .topBarTrailing) {
-                Menu {
-                    Button { jump(to: Date()) } label: { Label("Now", systemImage: "clock") }
-                    Button { jump(to: tonight(hour: 20)) } label: { Label("Tonight 8 PM", systemImage: "moon.stars") }
-                    Button { jump(to: tomorrow(hour: 8)) } label: { Label("Tomorrow Morning", systemImage: "sunrise") }
-                    Button { jump(to: tomorrow(hour: 20)) } label: { Label("Tomorrow Night", systemImage: "sparkles.tv") }
-                } label: { Image(systemName: "clock.arrow.circlepath") }
-                Menu {
-                    Button { zoom = min(zoom * 1.25, 2.5) } label: { Label("Zoom In", systemImage: "plus.magnifyingglass") }
-                    Button { zoom = max(zoom / 1.25, 0.5) } label: { Label("Zoom Out", systemImage: "minus.magnifyingglass") }
-                    Divider()
-                    Button { Task { await guide.load(deviceAuth: tuners.deviceAuth, hours: settings.guideHours, force: true) } } label: {
-                        Label("Refresh Guide", systemImage: "arrow.clockwise")
-                    }
-                } label: { Image(systemName: "slider.horizontal.3") }
+            ToolbarItem(placement: .topBarTrailing) {
+                Button {
+                    Task { await guide.load(deviceAuth: tuners.deviceAuth, hours: settings.guideHours, force: true) }
+                } label: {
+                    if guide.isLoading { ProgressView() } else { Label("Refresh Guide", systemImage: "arrow.clockwise") }
+                }
             }
         }
         .sheet(item: $selected) { p in
             NavigationStack { ProgramDetailView(program: p) }
                 .presentationDetents([.medium, .large])
         }
+        .navigationDestination(item: $channelPage) { ch in ChannelDetailView(channel: ch) }
+    }
+
+    // MARK: Day & filter bars
+
+    private struct DayJump: Identifiable {
+        var id: String { title }
+        var title: String
+        var date: Date
+    }
+
+    private var dayJumps: [DayJump] {
+        let cal = Calendar.current
+        var list = [DayJump(title: "Now", date: Date())]
+        let tonight = cal.date(bySettingHour: 20, minute: 0, second: 0, of: Date()) ?? Date()
+        if tonight > Date() { list.append(DayJump(title: "Tonight", date: tonight)) }
+        let df = DateFormatter()
+        df.setLocalizedDateFormatFromTemplate("EEE d")
+        var day = cal.startOfDay(for: Date())
+        while let next = cal.date(byAdding: .day, value: 1, to: day), next < end {
+            day = next
+            let evening = cal.date(bySettingHour: 18, minute: 0, second: 0, of: day) ?? day
+            let title = cal.isDateInTomorrow(day) ? "Tomorrow" : df.string(from: day)
+            list.append(DayJump(title: title, date: min(evening, end.addingTimeInterval(-3600))))
+        }
+        return list
+    }
+
+    private var visibleTime: Date {
+        start.addingTimeInterval(Double(viewport.minX + 60) / Double(pointsPerMinute) * 60)
+    }
+
+    private var dayBar: some View {
+        ScrollView(.horizontal, showsIndicators: false) {
+            HStack(spacing: 8) {
+                ForEach(dayJumps) { jumpItem in
+                    let isOn = isSelected(jumpItem)
+                    Button { jump(to: jumpItem.date) } label: {
+                        Text(jumpItem.title)
+                            .font(.subheadline.weight(.semibold))
+                            .padding(.horizontal, 14).padding(.vertical, 7)
+                            .background(isOn ? AnyShapeStyle(Color.accentColor) : AnyShapeStyle(Theme.card), in: Capsule())
+                            .foregroundStyle(isOn ? .white : .primary)
+                    }
+                    .buttonStyle(.plain)
+                }
+            }
+            .padding(.horizontal)
+        }
+        .padding(.top, 8)
+    }
+
+    private func isSelected(_ jumpItem: DayJump) -> Bool {
+        let cal = Calendar.current
+        let t = visibleTime
+        switch jumpItem.title {
+        case "Now": return abs(t.timeIntervalSinceNow) < 3600
+        case "Tonight": return cal.isDateInToday(t) && cal.component(.hour, from: t) >= 18 && abs(t.timeIntervalSinceNow) >= 3600
+        default: return cal.isDate(t, inSameDayAs: jumpItem.date)
+        }
     }
 
     private var filterBar: some View {
-        HStack(spacing: 8) {
-            Button {
-                withAnimation(.snappy) { favoritesOnly.toggle() }
-            } label: {
-                Image(systemName: favoritesOnly ? "star.fill" : "star")
-                    .padding(8)
-                    .background(favoritesOnly ? AnyShapeStyle(Color.yellow.opacity(0.3)) : AnyShapeStyle(Theme.card), in: Circle())
+        ScrollView(.horizontal, showsIndicators: false) {
+            HStack(spacing: 8) {
+                Button {
+                    withAnimation(.snappy) { favoritesOnly.toggle() }
+                } label: {
+                    Label("Favorites", systemImage: favoritesOnly ? "star.fill" : "star")
+                        .font(.footnote.weight(.semibold))
+                        .padding(.horizontal, 10).padding(.vertical, 6)
+                        .background(favoritesOnly ? AnyShapeStyle(Color.yellow.opacity(0.35)) : AnyShapeStyle(Theme.card), in: Capsule())
+                }
+                .buttonStyle(.plain)
+                ForEach(ProgramCategory.allCases.filter { $0 != .show }) { cat in
+                    Button {
+                        withAnimation(.snappy) { category = cat }
+                    } label: {
+                        HStack(spacing: 5) {
+                            if cat != .all { Circle().fill(Theme.color(for: cat)).frame(width: 8, height: 8) }
+                            Text(cat == .all ? "Everything" : cat.title)
+                        }
+                        .font(.footnote.weight(.semibold))
+                        .padding(.horizontal, 10).padding(.vertical, 6)
+                        .background(category == cat ? AnyShapeStyle(Color.accentColor.opacity(0.85)) : AnyShapeStyle(Theme.card), in: Capsule())
+                        .foregroundStyle(category == cat ? .white : .primary)
+                    }
+                    .buttonStyle(.plain)
+                }
             }
-            .buttonStyle(.plain)
-            .padding(.leading)
-            CategoryChips(selection: $category)
+            .padding(.horizontal)
         }
         .padding(.vertical, 8)
+    }
+
+    private var tipBanner: some View {
+        HStack(alignment: .top, spacing: 12) {
+            Image(systemName: "lightbulb.fill").foregroundStyle(.yellow)
+            Text("Tap a **show** to record it or set a reminder. Tap a **channel** to see everything it airs and record shows from it.")
+                .font(.footnote)
+            Spacer(minLength: 0)
+            Button { withAnimation { settings.guideTipsSeen = true } } label: {
+                Image(systemName: "xmark").font(.footnote.weight(.bold)).foregroundStyle(.secondary)
+            }
+            .accessibilityLabel("Dismiss tip")
+        }
+        .padding(12)
+        .background(Theme.card, in: RoundedRectangle(cornerRadius: 12, style: .continuous))
+        .padding(.horizontal)
+        .padding(.bottom, 8)
     }
 
     // MARK: Grid
@@ -178,13 +269,16 @@ struct GuideView: View {
     private func channelCell(_ ch: Channel) -> some View {
         GuideChannelCell(channel: ch, logo: guide.logo(ch.number), isPlaying: playback.currentChannel == ch, width: channelColumnWidth)
             .frame(width: channelColumnWidth, height: rowHeight)
-            .onTapGesture { playback.play(ch) }
+            .contentShape(Rectangle())
+            .onTapGesture { channelPage = ch }
             .contextMenu {
-                Button { playback.play(ch) } label: { Label("Watch", systemImage: "play.fill") }
+                Button { playback.play(ch) } label: { Label("Watch Now", systemImage: "play.fill") }
+                Button { channelPage = ch } label: { Label("Schedule & Shows to Record", systemImage: "calendar") }
                 Button { settings.toggleFavorite(ch.number) } label: {
-                    Label(settings.isFavorite(ch.number) ? "Remove Favorite" : "Favorite", systemImage: "star")
+                    Label(settings.isFavorite(ch.number) ? "Remove from Favorites" : "Add to Favorites", systemImage: "star")
                 }
             }
+            .accessibilityHint("Opens this channel's schedule")
     }
 
     private func ruler(now: Date) -> some View {

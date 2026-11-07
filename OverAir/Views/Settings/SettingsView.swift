@@ -9,94 +9,95 @@ struct SettingsView: View {
         @Bindable var settings = settings
         Form {
             Section {
-                ForEach(tuners.devices) { d in
-                    NavigationLink { DeviceDetailView(device: d) } label: { DeviceRow(device: d, selected: d.id == tuners.selectedTuner?.id) }
-                }
-                Button {
-                    Task { await tuners.discover() }
-                } label: {
-                    HStack {
-                        Label("Search for Devices", systemImage: "antenna.radiowaves.left.and.right")
-                        Spacer()
-                        if tuners.isDiscovering { ProgressView() }
+                if let tuner = tuners.selectedTuner {
+                    NavigationLink { DeviceDetailView(device: tuner) } label: { TunerSummaryRow(device: tuner) }
+                } else {
+                    Button { Task { await tuners.discover() } } label: {
+                        HStack {
+                            Label("Find My HDHomeRun", systemImage: "antenna.radiowaves.left.and.right")
+                            Spacer()
+                            if tuners.isDiscovering { ProgressView() }
+                        }
                     }
                 }
-                NavigationLink { AddDeviceView() } label: { Label("Add Device Manually", systemImage: "plus.circle") }
+                NavigationLink { RemoteAccessView() } label: {
+                    LabeledContent {
+                        Text(settings.remoteMethod == .none ? "Not set up" : settings.remoteMethod.title)
+                    } label: {
+                        Label("Watch Away From Home", systemImage: "globe")
+                    }
+                }
+                NavigationLink { TunerStatusView() } label: {
+                    LabeledContent { Text("\(tuners.tunersInUse) of \(tuners.totalTuners) in use") } label: {
+                        Label("Signal & Tuners", systemImage: "chart.bar.fill")
+                    }
+                }
+                NavigationLink { ChannelManagerView() } label: {
+                    LabeledContent { Text("\(tuners.channels.count)") } label: { Label("Channels & Favorites", systemImage: "list.number") }
+                }
+                NavigationLink { DevicesListView() } label: { Label("All Devices", systemImage: "externaldrive.connected.to.line.below") }
             } header: {
-                Text("Devices")
+                Text("Your HDHomeRun")
             } footer: {
                 if tuners.isDiscovering { Text(tuners.discoveryPhase) }
             }
 
-            Section("Live") {
-                NavigationLink { TunerStatusView() } label: {
-                    LabeledContent { Text("\(tuners.tunersInUse)/\(tuners.totalTuners) in use") } label: { Label("Tuner Status & Signal", systemImage: "chart.bar.fill") }
-                }
-                NavigationLink { ChannelManagerView() } label: {
-                    LabeledContent { Text("\(tuners.channels.count)") } label: { Label("Channels", systemImage: "list.number") }
-                }
-                NavigationLink { RemoteAccessView() } label: {
-                    LabeledContent { Text(tuners.connection.title) } label: { Label("Remote Access", systemImage: "globe") }
-                }
-            }
-
-            Section("Playback") {
-                Picker("Default Aspect", selection: $settings.aspectMode) {
+            Section {
+                Toggle("Closed Captions On by Default", isOn: $settings.closedCaptionsByDefault)
+                Toggle("Keep Playing in Background", isOn: $settings.backgroundAudio)
+                Toggle("Open Last Channel at Launch", isOn: $settings.autoplayLastChannel)
+                Toggle("Show Signal Strength in Player", isOn: $settings.showSignalOverlay)
+                Picker("Picture Size", selection: $settings.aspectMode) {
                     ForEach(AspectMode.allCases) { Text($0.title).tag($0) }
                 }
-                Toggle("Closed Captions by Default", isOn: $settings.closedCaptionsByDefault)
-                Toggle("Deinterlace (smoother 1080i)", isOn: $settings.deinterlace)
-                Toggle("Hardware Decoding", isOn: $settings.hardwareDecoding)
-                Toggle("Show Signal in Player", isOn: $settings.showSignalOverlay)
-                Toggle("Resume Last Channel on Launch", isOn: $settings.autoplayLastChannel)
-                Toggle("Background Audio", isOn: $settings.backgroundAudio)
-                Picker("Skip Back", selection: $settings.skipBackSeconds) {
-                    ForEach([5, 10, 15, 30], id: \.self) { Text("\($0) s").tag($0) }
-                }
-                Picker("Skip Forward", selection: $settings.skipForwardSeconds) {
-                    ForEach([10, 15, 30, 45, 60, 75, 90], id: \.self) { Text("\($0) s").tag($0) }
-                }
-                VStack(alignment: .leading) {
-                    Text("Home Buffer: \(settings.liveCachingMs) ms")
-                    Slider(value: Binding(get: { Double(settings.liveCachingMs) }, set: { settings.liveCachingMs = Int($0) }), in: 300...5000, step: 100)
-                }
-                VStack(alignment: .leading) {
-                    Text("Remote Buffer: \(settings.remoteCachingMs) ms")
-                    Slider(value: Binding(get: { Double(settings.remoteCachingMs) }, set: { settings.remoteCachingMs = Int($0) }), in: 1000...10000, step: 250)
-                }
-            }
-
-            Section("Recording") {
-                Picker("Record Button Saves To", selection: $settings.recordingTarget) {
-                    ForEach(RecordingTarget.allCases) { Text($0.title).tag($0) }
-                }
-                Stepper("Start Early: \(settings.startPaddingSeconds / 60) min", value: $settings.startPaddingSeconds, in: 0...1800, step: 30)
-                Stepper("End Late: \(settings.endPaddingSeconds / 60) min", value: $settings.endPaddingSeconds, in: 0...3600, step: 60)
-                Stepper("Remind Me: \(settings.reminderMinutes) min before", value: $settings.reminderMinutes, in: 0...30)
+                NavigationLink("Advanced Playback") { AdvancedPlaybackView() }
+            } header: {
+                Text("Watching")
             }
 
             Section {
-                Picker("Guide Range", selection: $settings.guideHours) {
-                    ForEach([8, 12, 24, 48], id: \.self) { Text("\($0) hours").tag($0) }
+                Picker("Record Button Saves To", selection: $settings.recordingTarget) {
+                    ForEach(RecordingTarget.allCases) { Text($0.title).tag($0) }
                 }
-                Picker("Row Height", selection: $settings.guideRowHeight) {
+                Stepper("Start \(settings.startPaddingSeconds / 60) min early", value: $settings.startPaddingSeconds, in: 0...1800, step: 60)
+                Stepper("End \(settings.endPaddingSeconds / 60) min late", value: $settings.endPaddingSeconds, in: 0...3600, step: 60)
+                Stepper("Reminders \(settings.reminderMinutes) min before", value: $settings.reminderMinutes, in: 0...30)
+            } header: {
+                Text("Recording")
+            } footer: {
+                Text("Starting early and ending late helps when shows run over, like live sports.")
+            }
+
+            Section {
+                Picker("Days of Listings", selection: $settings.guideHours) {
+                    Text("1 day").tag(24)
+                    Text("2 days").tag(48)
+                    Text("4 days").tag(96)
+                    Text("7 days").tag(168)
+                }
+                Picker("Row Size", selection: $settings.guideRowHeight) {
                     Text("Compact").tag(58.0)
                     Text("Regular").tag(72.0)
                     Text("Large").tag(88.0)
                 }
-                Toggle("Favorites First", isOn: $settings.favoritesFirst)
-                Toggle("Hide DRM Channels", isOn: $settings.hideDRMChannels)
-                Button("Refresh Guide Now") {
+                Toggle("Favorites at the Top", isOn: $settings.favoritesFirst)
+                Toggle("Hide Protected (DRM) Channels", isOn: $settings.hideDRMChannels)
+                Button("Refresh Listings Now") {
                     Task { await guide.load(deviceAuth: tuners.deviceAuth, hours: settings.guideHours, force: true) }
                 }
             } header: {
                 Text("Guide")
             } footer: {
-                if let d = guide.lastUpdated { Text("Updated \(Fmt.smartDay(d)). Extended guide data requires an HDHomeRun DVR subscription.") }
+                if let d = guide.lastUpdated {
+                    Text("Updated \(Fmt.smartDay(d)). More than a day of listings requires an HDHomeRun DVR subscription.")
+                }
             }
 
-            Section("General") {
+            Section {
                 Toggle("Haptic Feedback", isOn: $settings.haptics)
+                Button("Show Player Tips Again") { settings.playerTipsSeen = false; settings.guideTipsSeen = false }
+            } header: {
+                Text("General")
             }
 
             Section {
@@ -109,6 +110,97 @@ struct SettingsView: View {
             }
         }
         .navigationTitle("Settings")
+    }
+}
+
+struct TunerSummaryRow: View {
+    @Environment(TunerStore.self) private var tuners
+    var device: HDHRDevice
+
+    var body: some View {
+        HStack(spacing: 14) {
+            Image(systemName: "antenna.radiowaves.left.and.right")
+                .font(.title2)
+                .frame(width: 48, height: 48)
+                .background(Color.accentColor.opacity(0.2), in: RoundedRectangle(cornerRadius: 12, style: .continuous))
+            VStack(alignment: .leading, spacing: 3) {
+                Text(device.displayModel).font(.headline)
+                Text("\(device.tunerCount) tuners · \(tuners.channels.count) channels\(tuners.storageDevices.isEmpty ? "" : " · DVR storage")")
+                    .font(.caption).foregroundStyle(.secondary)
+                ConnectionBadge(state: tuners.connection)
+            }
+        }
+        .padding(.vertical, 4)
+    }
+}
+
+struct DevicesListView: View {
+    @Environment(TunerStore.self) private var tuners
+
+    var body: some View {
+        List {
+            Section {
+                ForEach(tuners.devices) { d in
+                    NavigationLink { DeviceDetailView(device: d) } label: { DeviceRow(device: d, selected: d.id == tuners.selectedTuner?.id) }
+                }
+            } footer: {
+                if tuners.isDiscovering { Text(tuners.discoveryPhase) }
+            }
+            Section {
+                Button {
+                    Task { await tuners.discover() }
+                } label: {
+                    HStack {
+                        Label("Search This Network", systemImage: "antenna.radiowaves.left.and.right")
+                        Spacer()
+                        if tuners.isDiscovering { ProgressView() }
+                    }
+                }
+                NavigationLink { AddDeviceView() } label: { Label("Add by IP Address", systemImage: "plus.circle") }
+            }
+        }
+        .navigationTitle("Devices")
+    }
+}
+
+struct AdvancedPlaybackView: View {
+    @Environment(AppSettings.self) private var settings
+
+    var body: some View {
+        @Bindable var settings = settings
+        Form {
+            Section {
+                Toggle("Smooth Interlaced Video", isOn: $settings.deinterlace)
+                Toggle("Hardware Decoding", isOn: $settings.hardwareDecoding)
+            } footer: {
+                Text("Most over-the-air channels are 1080i. Smoothing removes combing lines on motion.")
+            }
+            Section {
+                Picker("Skip Back", selection: $settings.skipBackSeconds) {
+                    ForEach([5, 10, 15, 30], id: \.self) { Text("\($0) seconds").tag($0) }
+                }
+                Picker("Skip Forward", selection: $settings.skipForwardSeconds) {
+                    ForEach([10, 15, 30, 45, 60, 75, 90], id: \.self) { Text("\($0) seconds").tag($0) }
+                }
+            } header: {
+                Text("Recordings")
+            }
+            Section {
+                VStack(alignment: .leading) {
+                    Text("At Home: \(String(format: "%.1f", Double(settings.liveCachingMs) / 1000)) s")
+                    Slider(value: Binding(get: { Double(settings.liveCachingMs) }, set: { settings.liveCachingMs = Int($0) }), in: 300...5000, step: 100)
+                }
+                VStack(alignment: .leading) {
+                    Text("Away From Home: \(String(format: "%.1f", Double(settings.remoteCachingMs) / 1000)) s")
+                    Slider(value: Binding(get: { Double(settings.remoteCachingMs) }, set: { settings.remoteCachingMs = Int($0) }), in: 1000...10000, step: 250)
+                }
+            } header: {
+                Text("Buffering")
+            } footer: {
+                Text("A bigger buffer reduces stutter on slow connections but makes channel changes slower.")
+            }
+        }
+        .navigationTitle("Advanced Playback")
     }
 }
 

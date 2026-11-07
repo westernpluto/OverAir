@@ -20,6 +20,10 @@ struct CastTarget: Identifiable, Hashable {
 
 /// Wraps libVLC so the app can play the raw MPEG-TS that HDHomeRun tuners emit
 /// (MPEG-2, H.264, HEVC video; AC-3, E-AC-3, AAC, MP2 audio; EIA-608/708 captions).
+///
+/// Every stream gets its own `VLCMediaPlayer` and render view. When the channel changes the
+/// previous player is stopped on a background queue: libVLC's `stop` blocks until the network
+/// input thread exits, which used to freeze the UI (and keep the old tuner busy) on channel changes.
 @MainActor
 @Observable
 final class PlayerController {
@@ -33,6 +37,8 @@ final class PlayerController {
             default: return false
             }
         }
+
+        var isLoading: Bool { self == .opening || self == .buffering }
     }
 
     private(set) var state: State = .idle
@@ -47,28 +53,23 @@ final class PlayerController {
     private(set) var castTargets: [CastTarget] = []
     private(set) var activeCast: CastTarget?
     var isMuted = false { didSet { applyMute() } }
-    var rate: Float = 1 { didSet { applyRate() } }
+    var rate: Float = 1 { didSet { player?.rate = rate } }
     var aspect: AspectMode = .fit { didSet { applyAspect() } }
 
-    /// The view libVLC renders into. Re-parented into whichever SwiftUI surface shows video.
+    /// The stable view SwiftUI hosts. Each stream renders into its own child view inside it.
     let videoView: UIView = VideoHostView()
 
+    @ObservationIgnored private var player: VLCMediaPlayer?
+    @ObservationIgnored private var renderView: UIView?
+    @ObservationIgnored private var renderer: VLCRendererDiscoverer?
     @ObservationIgnored private var timer: Timer?
     @ObservationIgnored private var wantsCaptions = false
     @ObservationIgnored private var pendingStart: Double?
     @ObservationIgnored private var openedAt = Date()
+    @ObservationIgnored private var sawPlaying = false
     @ObservationIgnored var containerSize: CGSize = .zero { didSet { if oldValue != containerSize { applyAspect() } } }
 
-    #if canImport(VLCKitSPM)
-    private let player = VLCMediaPlayer()
-    @ObservationIgnored private var renderer: VLCRendererDiscoverer?
-    #endif
-
-    init() {
-        #if canImport(VLCKitSPM)
-        player.drawable = videoView
-        #endif
-    }
+    private static let teardownQueue = DispatchQueue(label: "app.overair.vlc-teardown", qos: .userInitiated)
 
     var isLive: Bool { duration <= 0 }
 
@@ -76,6 +77,8 @@ final class PlayerController {
         guard duration > 0 else { return 0 }
         return min(max(currentTime / duration, 0), 1)
     }
+
+    var captionsOn: Bool { selectedSubtitle >= 0 || (wantsCaptions && subtitleTracks.isEmpty && state.isActive) }
 
     // MARK: Playback
 
@@ -89,129 +92,133 @@ final class PlayerController {
     }
 
     func play(url: URL, options: Options) {
-        stopTimer()
+        retireCurrentPlayer()
         state = .opening
         currentTime = 0
         duration = 0
         audioTracks = []
         subtitleTracks = []
+        selectedAudio = -1
+        selectedSubtitle = -1
         wantsCaptions = options.captions
         pendingStart = options.startAt
         openedAt = Date()
-        isMuted = options.muted
-        #if canImport(VLCKitSPM)
+        sawPlaying = false
+        rate = 1
+
+        let render = VideoHostView(frame: videoView.bounds)
+        render.autoresizingMask = [.flexibleWidth, .flexibleHeight]
+        render.backgroundColor = .clear
+        videoView.addSubview(render)
+
         let media = VLCMedia(url: url)
         media.addOption(":network-caching=\(options.cachingMs)")
         media.addOption(":live-caching=\(options.cachingMs)")
         media.addOption(":file-caching=\(max(options.cachingMs / 2, 300))")
         media.addOption(":clock-jitter=0")
-        media.addOption(":http-reconnect")
         if !options.hardwareDecoding { media.addOption(":codec=avcodec") }
-        player.media = media
-        player.setDeinterlaceFilter(options.deinterlace ? "yadif2x" : nil)
-        player.play()
+
+        let p = VLCMediaPlayer()
+        p.drawable = render
+        p.media = media
+        p.setDeinterlaceFilter(options.deinterlace ? "yadif2x" : nil)
+        player = p
+        renderView = render
+        isMuted = options.muted
+        p.play()
         applyAspect()
         applyMute()
-        #else
-        state = .failed("Video playback requires VLCKit. Open the project in Xcode so Swift Package Manager can fetch it.")
-        #endif
         startTimer()
     }
 
     func togglePause() {
-        #if canImport(VLCKitSPM)
+        guard let player else { return }
         if player.isPlaying { player.pause() } else { player.play() }
-        #endif
     }
 
-    func pause() {
-        #if canImport(VLCKitSPM)
-        if player.isPlaying { player.pause() }
-        #endif
-    }
+    func pause() { if player?.isPlaying == true { player?.pause() } }
 
-    func resume() {
-        #if canImport(VLCKitSPM)
-        if !player.isPlaying { player.play() }
-        #endif
-    }
+    func resume() { if player?.isPlaying == false { player?.play() } }
 
     func stop() {
         stopTimer()
-        #if canImport(VLCKitSPM)
-        player.stop()
-        player.media = nil
-        #endif
+        retireCurrentPlayer()
         state = .idle
         currentTime = 0
         duration = 0
+        audioTracks = []
+        subtitleTracks = []
     }
 
     func seek(to seconds: Double) {
-        #if canImport(VLCKitSPM)
-        guard duration > 0 else { return }
+        guard let player, duration > 0 else { return }
         let clamped = min(max(seconds, 0), duration - 1)
         player.position = Float(clamped / duration)
         currentTime = clamped
-        #endif
     }
 
     func skip(by seconds: Int) {
-        #if canImport(VLCKitSPM)
+        guard let player else { return }
         if seconds >= 0 { player.jumpForward(Int32(seconds)) } else { player.jumpBackward(Int32(-seconds)) }
         currentTime = max(0, currentTime + Double(seconds))
-        #endif
     }
 
     func selectAudio(_ track: MediaTrack) {
-        #if canImport(VLCKitSPM)
-        player.currentAudioTrackIndex = track.id
+        player?.currentAudioTrackIndex = track.id
         selectedAudio = track.id
-        #endif
     }
 
     func selectSubtitle(_ track: MediaTrack?) {
-        #if canImport(VLCKitSPM)
         let id = track?.id ?? -1
-        player.currentVideoSubTitleIndex = id
+        player?.currentVideoSubTitleIndex = id
         selectedSubtitle = id
         wantsCaptions = track != nil
-        #endif
     }
-
-    var captionsOn: Bool { selectedSubtitle >= 0 }
 
     func toggleCaptions() {
-        if captionsOn { selectSubtitle(nil) } else if let first = subtitleTracks.first { selectSubtitle(first) } else { wantsCaptions = true }
+        if captionsOn {
+            selectSubtitle(nil)
+        } else if let first = subtitleTracks.first {
+            selectSubtitle(first)
+        } else {
+            wantsCaptions = true // applied as soon as the caption track appears
+        }
     }
 
-    func snapshot() -> UIImage? {
-        let renderer = UIGraphicsImageRenderer(bounds: videoView.bounds)
-        return renderer.image { _ in videoView.drawHierarchy(in: videoView.bounds, afterScreenUpdates: false) }
+    /// Stops the current player without blocking the main thread.
+    private func retireCurrentPlayer() {
+        guard let old = player else { return }
+        let oldView = renderView
+        player = nil
+        renderView = nil
+        old.audio?.isMuted = true
+        Self.teardownQueue.async {
+            old.stop()
+            DispatchQueue.main.async {
+                old.drawable = nil
+                oldView?.removeFromSuperview()
+            }
+        }
     }
 
     // MARK: Casting (Chromecast via libVLC renderer)
 
     func startCastDiscovery() {
-        #if canImport(VLCKitSPM)
         guard renderer == nil else { return }
         let names = VLCRendererDiscoverer.list()?.map(\.name) ?? []
         let name = names.first(where: { $0.contains("microdns") }) ?? names.first
         guard let name, let d = VLCRendererDiscoverer(name: name) else { return }
         _ = d.start()
         renderer = d
-        #endif
     }
 
     func stopCastDiscovery() {
-        #if canImport(VLCKitSPM)
         renderer?.stop()
         renderer = nil
-        #endif
     }
 
     func cast(to target: CastTarget?) {
-        #if canImport(VLCKitSPM)
+        guard let player else { return }
         guard let target else {
             _ = player.setRendererItem(nil)
             activeCast = nil
@@ -221,47 +228,35 @@ final class PlayerController {
             _ = player.setRendererItem(item)
             activeCast = target
         }
-        #endif
     }
 
     // MARK: Internals
 
     private func applyMute() {
-        #if canImport(VLCKitSPM)
-        player.audio?.isMuted = isMuted
-        #endif
-    }
-
-    private func applyRate() {
-        #if canImport(VLCKitSPM)
-        player.rate = rate
-        #endif
+        player?.audio?.isMuted = isMuted
     }
 
     private func applyAspect() {
-        #if canImport(VLCKitSPM)
-        let size = containerSize
+        guard let player else { return }
         func setCrop(_ s: String?) {
             if let s { let p = strdup(s); player.videoCropGeometry = p; free(p) } else { player.videoCropGeometry = nil }
         }
         func setAspect(_ s: String?) {
             if let s { let p = strdup(s); player.videoAspectRatio = p; free(p) } else { player.videoAspectRatio = nil }
         }
+        let size = containerSize
         guard size.width > 0, size.height > 0 else { return }
         let ratio = "\(Int(size.width.rounded())):\(Int(size.height.rounded()))"
         switch aspect {
-        case .fit:
-            setCrop(nil); setAspect(nil)
-        case .fill:
-            setAspect(nil); setCrop(ratio)
-        case .stretch:
-            setCrop(nil); setAspect(ratio)
+        case .fit: setCrop(nil); setAspect(nil)
+        case .fill: setAspect(nil); setCrop(ratio)
+        case .stretch: setCrop(nil); setAspect(ratio)
         }
-        #endif
     }
 
     private func startTimer() {
-        timer = Timer.scheduledTimer(withTimeInterval: 0.5, repeats: true) { [weak self] _ in
+        guard timer == nil else { return }
+        timer = Timer.scheduledTimer(withTimeInterval: 0.4, repeats: true) { [weak self] _ in
             MainActor.assumeIsolated { self?.poll() }
         }
     }
@@ -272,23 +267,34 @@ final class PlayerController {
     }
 
     private func poll() {
-        #if canImport(VLCKitSPM)
+        guard let player else { return }
+        let elapsed = Date().timeIntervalSince(openedAt)
         switch player.state {
-        case .opening: state = .opening
-        case .buffering: if state != .playing && state != .paused { state = player.isPlaying ? .playing : .buffering }
-        case .playing, .esAdded: state = player.isPlaying ? .playing : .buffering
-        case .paused: state = .paused
-        case .ended: state = .ended
-        case .error: state = .failed("The stream couldn't be played. The tuner may be busy, or the signal too weak.")
+        case .opening:
+            state = .opening
+        case .buffering, .playing, .esAdded:
+            state = player.isPlaying ? .playing : (state == .paused ? .paused : .buffering)
+        case .paused:
+            state = .paused
+        case .ended:
+            state = .ended
+        case .error:
+            state = .failed("This channel couldn't be played. All tuners may be in use, or the signal is too weak.")
         case .stopped:
-            if state == .opening && Date().timeIntervalSince(openedAt) > 15 {
-                state = .failed("Timed out connecting to the tuner.")
-            } else if state.isActive && state != .opening {
+            if !sawPlaying && elapsed > 12 {
+                state = .failed("The tuner didn't respond. Check that your HDHomeRun is online and a tuner is free.")
+            } else if sawPlaying {
                 state = .ended
             }
-        @unknown default: break
+        @unknown default:
+            break
         }
-        if player.isPlaying && state != .playing { state = .playing }
+        if player.isPlaying {
+            state = .playing
+            sawPlaying = true
+        } else if !sawPlaying && state.isLoading && elapsed > 20 {
+            state = .failed("Still waiting for video. The signal may be too weak, or all tuners are busy.")
+        }
 
         currentTime = Double(player.time.intValue) / 1000
         let length = Double(player.media?.length.intValue ?? 0) / 1000
@@ -320,17 +326,18 @@ final class PlayerController {
             let targets = d.renderers.map { CastTarget(name: $0.name, type: $0.type) }
             if targets != castTargets { castTargets = targets }
         }
-        #endif
     }
 }
 
-/// The drawable handed to libVLC. Keeps libVLC's render view filling it at all times.
+/// A view that keeps every subview (libVLC's render surface) sized to its bounds,
+/// through rotation, fold/unfold and window resizes.
 final class VideoHostView: UIView {
     override init(frame: CGRect) {
         super.init(frame: frame)
         backgroundColor = .black
         isUserInteractionEnabled = false
         autoresizesSubviews = true
+        clipsToBounds = true
     }
 
     required init?(coder: NSCoder) { fatalError() }

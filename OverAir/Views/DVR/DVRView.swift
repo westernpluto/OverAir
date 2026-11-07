@@ -3,17 +3,15 @@ import SwiftUI
 struct DVRView: View {
     @Environment(TunerStore.self) private var tuners
     @Environment(DVRStore.self) private var dvr
-    @Environment(LocalRecorder.self) private var recorder
 
     enum DVRSection: String, CaseIterable, Identifiable {
-        case library, upcoming, rules, iphone
+        case library, upcoming, rules
         var id: String { rawValue }
         var title: String {
             switch self {
             case .library: return "Library"
-            case .upcoming: return "Upcoming"
-            case .rules: return "Rules"
-            case .iphone: return "On iPhone"
+            case .upcoming: return "Scheduled"
+            case .rules: return "Series Rules"
             }
         }
     }
@@ -34,14 +32,12 @@ struct DVRView: View {
             case .library: LibraryView()
             case .upcoming: UpcomingView()
             case .rules: RulesView()
-            case .iphone: LocalRecordingsView()
             }
         }
-        .navigationTitle("DVR")
+        .navigationTitle("Recordings")
         .toolbar {
             ToolbarItem(placement: .topBarTrailing) {
-                Button { showSearch = true } label: { Image(systemName: "plus.magnifyingglass") }
-                    .accessibilityLabel("Find shows to record")
+                Button { showSearch = true } label: { Label("Record a Show", systemImage: "plus") }
             }
         }
         .sheet(isPresented: $showSearch) { SeriesSearchView() }
@@ -54,6 +50,7 @@ struct DVRView: View {
 struct LibraryView: View {
     @Environment(TunerStore.self) private var tuners
     @Environment(DVRStore.self) private var dvr
+    @Environment(LocalRecorder.self) private var recorder
     @Environment(PlaybackCoordinator.self) private var playback
     @Environment(\.horizontalSizeClass) private var hSize
     @State private var filter = "All"
@@ -74,7 +71,7 @@ struct LibraryView: View {
                 if tuners.storageDevices.isEmpty {
                     noStorage
                 } else if dvr.series.isEmpty && !dvr.isLoading {
-                    EmptyStateView(symbol: "tray", title: "No Recordings Yet", message: "Schedule something from the Guide, or tap + to find a show.")
+                    EmptyStateView(symbol: "tray", title: "No Recordings Yet", message: "Tap a show in the Guide, or use Record a Show (+), to start recording.")
                         .padding(.top, 40)
                 }
 
@@ -86,6 +83,26 @@ struct LibraryView: View {
                 }
                 if !dvr.recentlyAdded.isEmpty {
                     shelf("Recently Recorded", episodes: Array(dvr.recentlyAdded.prefix(12)))
+                }
+
+                if !recorder.recordings.isEmpty || !recorder.active.isEmpty {
+                    NavigationLink {
+                        LocalRecordingsView().navigationTitle("On This iPhone")
+                    } label: {
+                        HStack(spacing: 12) {
+                            Image(systemName: "iphone").font(.title3).frame(width: 36)
+                            VStack(alignment: .leading, spacing: 2) {
+                                Text("Saved on This iPhone").font(.headline)
+                                Text("\(recorder.recordings.count) recording\(recorder.recordings.count == 1 ? "" : "s")\(recorder.active.isEmpty ? "" : " · \(recorder.active.count) recording now")")
+                                    .font(.caption).foregroundStyle(.secondary)
+                            }
+                            Spacer()
+                            Image(systemName: "chevron.right").foregroundStyle(.tertiary)
+                        }
+                        .cardStyle()
+                    }
+                    .buttonStyle(.plain)
+                    .padding(.horizontal)
                 }
 
                 if !dvr.series.isEmpty {

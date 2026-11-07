@@ -109,15 +109,18 @@ final class TunerStore {
                 for await d in group { if let d { refreshed.append(d) } }
             }
             if refreshed.contains(where: \.isTuner) {
-                apply(devices: refreshed, state: .local)
+                // Reaching the tuner's LAN address from another network means a VPN / Tailscale route.
+                let home = NetworkInfo.isOnLAN(of: refreshed.first(where: \.isTuner))
+                apply(devices: refreshed, state: home ? .local : .remote)
+                if home { Task { await refreshHomePublicIP() } }
                 await loadLineup()
                 return
             }
         }
 
-        if profile != .local, !settings.remoteHosts.isEmpty {
+        if profile != .local, !remoteCandidates.isEmpty {
             var remote: [HDHRDevice] = []
-            for host in settings.remoteHosts {
+            for host in remoteCandidates {
                 guard let base = Discovery.baseURL(for: host) else { continue }
                 if let d = try? await HDHRClient.discover(at: base, hostOverride: base.host, timeout: 6) {
                     remote.append(d)
@@ -130,12 +133,32 @@ final class TunerStore {
             }
         }
 
-        if profile == .remote {
+        let awayFromHome = !devices.isEmpty && !NetworkInfo.isOnLAN(of: selectedTuner)
+        if profile == .remote || awayFromHome {
             connection = .offline
-            lastError = "Couldn't reach your HDHomeRun through any remote address. Check your VPN / Tailscale connection or port forwarding."
+            lastError = settings.remoteMethod == .none
+                ? "You're away from home. Set up away-from-home viewing to watch from anywhere."
+                : "Couldn't reach your HDHomeRun from here. Check that \(settings.remoteMethod == .tailscale ? "Tailscale" : "your VPN") is connected."
             return
         }
         await discover()
+    }
+
+    /// Remote addresses to try: ones the user added, plus the home public IP when port forwarding.
+    var remoteCandidates: [String] {
+        var list = settings.remoteHosts
+        if settings.remoteMethod == .portForward, let ip = settings.homePublicIP, !list.contains(ip) { list.append(ip) }
+        return list
+    }
+
+    /// While at home, remember the home's public IP so port-forwarded access works without typing it.
+    func refreshHomePublicIP() async {
+        guard settings.remoteMethod == .portForward else { return }
+        if let updated = settings.homePublicIPUpdated, Date().timeIntervalSince(updated) < 6 * 3600 { return }
+        if let ip = await NetworkInfo.fetchPublicIP() {
+            settings.homePublicIP = ip
+            settings.homePublicIPUpdated = Date()
+        }
     }
 
     func discover() async {
@@ -148,7 +171,7 @@ final class TunerStore {
             guard let host = d.baseURL.host else { return nil }
             return d.baseURL.port.map { "\(host):\($0)" } ?? host
         }
-        let remote = settings.networkProfile == .local ? [] : settings.remoteHosts
+        let remote = settings.networkProfile == .local ? [] : remoteCandidates
         let found = await Discovery.discoverAll(knownHosts: known, remoteHosts: remote) { p in
             Task { @MainActor [weak self] in
                 self?.discoveryPhase = p.phase
@@ -161,8 +184,9 @@ final class TunerStore {
             lastError = "No HDHomeRun found. Make sure your iPhone is on the same Wi-Fi as the tuner, or add a remote address."
             return
         }
-        let anyLocal = found.contains { $0.hostOverride == nil && $0.isTuner }
-        apply(devices: found, state: anyLocal ? .local : .remote)
+        let home = found.first { $0.hostOverride == nil && $0.isTuner }.map { NetworkInfo.isOnLAN(of: $0) } ?? false
+        apply(devices: found, state: home ? .local : .remote)
+        if home { Task { await refreshHomePublicIP() } }
         await loadLineup()
     }
 

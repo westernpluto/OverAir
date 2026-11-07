@@ -2,22 +2,24 @@ import Foundation
 import Observation
 
 enum AppTab: String, CaseIterable, Identifiable, Codable {
-    case live, guide, dvr, settings
+    case live, guide, dvr, settings, search
     var id: String { rawValue }
     var title: String {
         switch self {
         case .live: return "Live TV"
         case .guide: return "Guide"
-        case .dvr: return "DVR"
+        case .dvr: return "Recordings"
         case .settings: return "Settings"
+        case .search: return "Search"
         }
     }
     var symbol: String {
         switch self {
         case .live: return "play.tv"
-        case .guide: return "calendar.day.timeline.left"
+        case .guide: return "calendar"
         case .dvr: return "record.circle"
         case .settings: return "gearshape"
+        case .search: return "magnifyingglass"
         }
     }
 }
@@ -49,6 +51,19 @@ enum RecordingTarget: String, CaseIterable, Identifiable, Codable {
         case .device: return "HDHomeRun Storage"
         case .phone: return "This iPhone"
         case .ask: return "Ask Every Time"
+        }
+    }
+}
+
+enum RemoteMethod: String, CaseIterable, Identifiable, Codable {
+    case none, tailscale, routerVPN, portForward
+    var id: String { rawValue }
+    var title: String {
+        switch self {
+        case .none: return "Not Set Up"
+        case .tailscale: return "Tailscale"
+        case .routerVPN: return "Router VPN"
+        case .portForward: return "Port Forwarding"
         }
     }
 }
@@ -98,6 +113,12 @@ final class AppSettings {
     var skipBackSeconds: Int { didSet { defaults.set(skipBackSeconds, forKey: "skipBack") } }
     var guideRowHeight: Double { didSet { defaults.set(guideRowHeight, forKey: "guideRow") } }
     var reminderMinutes: Int { didSet { defaults.set(reminderMinutes, forKey: "reminderMin") } }
+    var remoteMethod: RemoteMethod { didSet { defaults.set(remoteMethod.rawValue, forKey: "remoteMethod") } }
+    /// Your home's public IP, refreshed automatically whenever the app is used at home.
+    var homePublicIP: String? { didSet { defaults.set(homePublicIP, forKey: "homePublicIP") } }
+    var homePublicIPUpdated: Date? { didSet { defaults.set(homePublicIPUpdated, forKey: "homePublicIPUpdated") } }
+    var playerTipsSeen: Bool { didSet { defaults.set(playerTipsSeen, forKey: "playerTips") } }
+    var guideTipsSeen: Bool { didSet { defaults.set(guideTipsSeen, forKey: "guideTips") } }
 
     init(defaults: UserDefaults = .standard) {
         self.defaults = defaults
@@ -131,6 +152,11 @@ final class AppSettings {
         skipBackSeconds = int("skipBack", 10)
         guideRowHeight = defaults.object(forKey: "guideRow") as? Double ?? 72
         reminderMinutes = int("reminderMin", 2)
+        remoteMethod = RemoteMethod(rawValue: defaults.string(forKey: "remoteMethod") ?? "") ?? .none
+        homePublicIP = defaults.string(forKey: "homePublicIP")
+        homePublicIPUpdated = defaults.object(forKey: "homePublicIPUpdated") as? Date
+        playerTipsSeen = bool("playerTips", false)
+        guideTipsSeen = bool("guideTips", false)
     }
 
     func isFavorite(_ number: String) -> Bool { favorites.contains(number) }

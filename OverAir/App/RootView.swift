@@ -6,7 +6,6 @@ struct RootView: View {
     @Environment(GuideStore.self) private var guide
     @Environment(DVRStore.self) private var dvr
     @Environment(PlaybackCoordinator.self) private var playback
-    @Environment(\.horizontalSizeClass) private var hSize
     @Environment(\.scenePhase) private var scenePhase
 
     @State private var tab: AppTab = .live
@@ -14,19 +13,25 @@ struct RootView: View {
 
     var body: some View {
         @Bindable var playback = playback
-        Group {
+        ZStack {
             if !settings.onboardingComplete && !tuners.hasDevice {
                 OnboardingView()
-            } else if hSize == .regular {
-                SplitRoot(selection: $tab)
             } else {
-                TabRoot(selection: $tab)
+                MainTabs(selection: $tab)
+            }
+
+            // The player stays mounted while anything is playing; minimising only hides it.
+            if playback.item != nil {
+                PlayerOverlay()
+                    .opacity(playback.isExpanded ? 1 : 0)
+                    .offset(y: playback.isExpanded ? 0 : 60)
+                    .allowsHitTesting(playback.isExpanded)
+                    .accessibilityHidden(!playback.isExpanded)
+                    .zIndex(1)
             }
         }
+        .animation(.smooth(duration: 0.32), value: playback.isExpanded)
         .background(Theme.background.ignoresSafeArea())
-        .fullScreenCover(isPresented: $playback.isFullScreen) {
-            PlayerScreen()
-        }
         .fullScreenCover(isPresented: $playback.isMultiviewPresented) {
             MultiviewScreen()
         }
@@ -55,7 +60,7 @@ struct RootView: View {
             async let d: Void = dvr.refresh(tuners: tuners)
             _ = await (g, d)
             if settings.autoplayLastChannel, let last = settings.lastChannel, let ch = tuners.channel(last) {
-                playback.play(ch, fullScreen: false)
+                playback.play(ch, expand: false)
             }
         }
     }
@@ -68,83 +73,53 @@ struct RootView: View {
     }
 }
 
-/// iPhone layout.
-struct TabRoot: View {
+/// System tab view: a tab bar on iPhone, vertical bars on iPhone Duo's outer display,
+/// and an adaptable sidebar on the Duo's inner display and iPad.
+struct MainTabs: View {
     @Binding var selection: AppTab
 
     var body: some View {
         TabView(selection: $selection) {
-            ForEach(AppTab.allCases) { tab in
-                NavigationStack { tab.rootView.withMiniPlayer() }
-                    .tabItem { Label(tab.title, systemImage: tab.symbol) }
-                    .tag(tab)
+            Tab("Live TV", systemImage: AppTab.live.symbol, value: AppTab.live) {
+                NavigationStack { LiveTVView() }
+            }
+            Tab("Guide", systemImage: AppTab.guide.symbol, value: AppTab.guide) {
+                NavigationStack { GuideView() }
+            }
+            Tab("Recordings", systemImage: AppTab.dvr.symbol, value: AppTab.dvr) {
+                NavigationStack { DVRView() }
+            }
+            Tab("Settings", systemImage: AppTab.settings.symbol, value: AppTab.settings) {
+                NavigationStack { SettingsView() }
+            }
+            Tab(value: AppTab.search, role: .search) {
+                NavigationStack { SearchView() }
             }
         }
+        .tabViewStyle(.sidebarAdaptable)
+        .modifier(MiniPlayerAccessory())
     }
 }
 
-/// Large-screen layout (iPad, foldables unfolded, iPhone landscape Max) with a sidebar.
-struct SplitRoot: View {
-    @Binding var selection: AppTab
-    @Environment(TunerStore.self) private var tuners
-    @Environment(GuideStore.self) private var guide
+/// Puts the mini player in the system's bottom-accessory slot (above the tab bar) where available.
+struct MiniPlayerAccessory: ViewModifier {
     @Environment(PlaybackCoordinator.self) private var playback
-    @Environment(AppSettings.self) private var settings
 
-    var body: some View {
-        NavigationSplitView {
-            List {
-                Section {
-                    ForEach(AppTab.allCases) { tab in
-                        Button { selection = tab } label: {
-                            Label(tab.title, systemImage: tab.symbol)
-                                .foregroundStyle(selection == tab ? Color.accentColor : .primary)
-                        }
-                        .listRowBackground(selection == tab ? Color.accentColor.opacity(0.15) : Color.clear)
-                    }
-                }
-                if !tuners.favoriteChannels.isEmpty {
-                    Section("Favorites") {
-                        ForEach(tuners.favoriteChannels) { ch in
-                            Button { playback.play(ch) } label: {
-                                HStack {
-                                    ChannelLogo(url: guide.logo(ch.number), number: ch.number, name: ch.name, size: 28)
-                                    VStack(alignment: .leading, spacing: 0) {
-                                        Text("\(ch.number) \(ch.name)").font(.subheadline.weight(.medium))
-                                        Text(guide.nowPlaying(ch.number)?.title ?? "").font(.caption2).foregroundStyle(.secondary).lineLimit(1)
-                                    }
-                                }
-                            }
-                            .foregroundStyle(.primary)
-                        }
-                    }
-                }
-                Section {
-                    ConnectionBadge(state: tuners.connection)
+    func body(content: Content) -> some View {
+        if #available(iOS 26.1, *) {
+            content.tabViewBottomAccessory(isEnabled: playback.item != nil) {
+                MiniPlayer()
+            }
+        } else {
+            content.overlay(alignment: .bottom) {
+                if playback.item != nil {
+                    MiniPlayer()
+                        .padding(8)
+                        .background(.regularMaterial, in: RoundedRectangle(cornerRadius: 18, style: .continuous))
+                        .padding(.horizontal, 10)
+                        .padding(.bottom, 58)
                 }
             }
-            .navigationTitle("OverAir")
-            .navigationSplitViewColumnWidth(min: 220, ideal: 260)
-        } detail: {
-            NavigationStack { selection.rootView.withMiniPlayer() }
         }
-    }
-}
-
-extension AppTab {
-    @MainActor @ViewBuilder
-    var rootView: some View {
-        switch self {
-        case .live: LiveTVView()
-        case .guide: GuideView()
-        case .dvr: DVRView()
-        case .settings: SettingsView()
-        }
-    }
-}
-
-extension View {
-    func withMiniPlayer() -> some View {
-        safeAreaInset(edge: .bottom, spacing: 0) { MiniPlayer() }
     }
 }

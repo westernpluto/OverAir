@@ -22,17 +22,21 @@ enum PlaybackItem: Equatable {
     }
 }
 
-/// Central place that starts/stops playback so the same player survives tab switches
-/// (full screen ⇄ mini player), integrates with Control Center and the sleep timer.
+/// Central place that starts/stops playback. The player view stays mounted for as long as
+/// something is playing; "minimising" only hides it, so the video surface is never torn down
+/// or moved between views (which is what made channel changes hang before).
 @MainActor
 @Observable
 final class PlaybackCoordinator {
     let player = PlayerController()
     private(set) var item: PlaybackItem?
-    var isFullScreen = false
+    /// Full-screen player visible (vs. minimised to the mini player).
+    var isExpanded = false
     var isMultiviewPresented = false
     var multiviewChannels: [Channel] = []
     private(set) var sleepTimerEnd: Date?
+    /// Briefly shown "2.1 CBS" banner after a channel change.
+    private(set) var channelBanner: Channel?
     var lastError: String?
 
     @ObservationIgnored private let settings: AppSettings
@@ -41,6 +45,9 @@ final class PlaybackCoordinator {
     @ObservationIgnored private let dvr: DVRStore
     @ObservationIgnored private let recorder: LocalRecorder
     @ObservationIgnored private var sleepTask: Task<Void, Never>?
+    @ObservationIgnored private var tuneTask: Task<Void, Never>?
+    @ObservationIgnored private var bannerTask: Task<Void, Never>?
+    @ObservationIgnored private var lastTune = Date.distantPast
     @ObservationIgnored private var previousChannel: Channel?
     @ObservationIgnored private var remoteCommandsConfigured = false
 
@@ -54,41 +61,60 @@ final class PlaybackCoordinator {
     }
 
     var isPlaying: Bool { item != nil }
-
     var currentChannel: Channel? { item?.channel }
+    var hasPreviousChannel: Bool { previousChannel != nil && previousChannel != currentChannel }
+
+    func nextChannel(offset: Int) -> Channel? {
+        guard let current = currentChannel else { return nil }
+        return tuners.adjacentChannel(to: current.number, offset: offset)
+    }
 
     // MARK: Start
 
-    func play(_ channel: Channel, fullScreen: Bool = true) {
+    /// Tunes a live channel. Rapid presses (channel surfing) are coalesced so only the
+    /// channel you land on actually takes a tuner.
+    func play(_ channel: Channel, expand: Bool = true) {
         guard let url = tuners.streamURL(for: channel) else {
             lastError = "No stream address for channel \(channel.number)."
             return
         }
-        if let current = item?.channel, current != channel { previousChannel = current }
+        if let current = currentChannel, current != channel { previousChannel = current }
         saveResumeIfNeeded()
+        let wasSurfing = item?.isLive == true && Date().timeIntervalSince(lastTune) < 1.2
+        lastTune = Date()
         item = .live(channel)
         settings.noteWatched(channel.number)
-        player.play(url: url, options: options(captions: settings.closedCaptionsByDefault))
-        activateAudioSession()
-        updateNowPlaying()
-        if fullScreen { isFullScreen = true }
+        showBanner(channel)
+        if expand { isExpanded = true }
         Haptics.tap(settings)
+
+        tuneTask?.cancel()
+        let options = options(captions: settings.closedCaptionsByDefault || player.captionsOn)
+        tuneTask = Task { [weak self] in
+            if wasSurfing { try? await Task.sleep(nanoseconds: 450_000_000) }
+            guard !Task.isCancelled, let self else { return }
+            self.player.play(url: url, options: options)
+            self.activateAudioSession()
+            self.updateNowPlaying()
+        }
     }
 
     func play(_ episode: RecordedEpisode, fromStart: Bool = false) {
         guard let url = episode.playURL else { lastError = "This recording has no play address."; return }
         saveResumeIfNeeded()
+        tuneTask?.cancel()
         item = .recording(episode)
         var opts = options(captions: settings.closedCaptionsByDefault)
         opts.startAt = fromStart ? nil : episode.resumeSeconds.map(Double.init)
         player.play(url: url, options: opts)
         activateAudioSession()
         updateNowPlaying()
-        isFullScreen = true
+        isExpanded = true
     }
 
     func play(_ local: LocalRecording, fromStart: Bool = false) {
         saveResumeIfNeeded()
+        tuneTask?.cancel()
         item = .local(local)
         var opts = options(captions: settings.closedCaptionsByDefault)
         opts.cachingMs = 300
@@ -96,7 +122,16 @@ final class PlaybackCoordinator {
         player.play(url: local.fileURL, options: opts)
         activateAudioSession()
         updateNowPlaying()
-        isFullScreen = true
+        isExpanded = true
+    }
+
+    func retry() {
+        switch item {
+        case let .live(ch)?: lastTune = .distantPast; play(ch, expand: isExpanded)
+        case let .recording(ep)?: play(ep)
+        case let .local(rec)?: play(rec)
+        case nil: break
+        }
     }
 
     private func options(captions: Bool) -> PlayerController.Options {
@@ -114,31 +149,32 @@ final class PlaybackCoordinator {
     func channelDown() { step(-1) }
 
     private func step(_ offset: Int) {
-        guard let current = item?.channel, let next = tuners.adjacentChannel(to: current.number, offset: offset) else { return }
-        play(next, fullScreen: isFullScreen)
+        guard let next = nextChannel(offset: offset) else { return }
+        play(next, expand: isExpanded)
     }
 
     func lastChannel() {
         guard let prev = previousChannel else { return }
-        play(prev, fullScreen: isFullScreen)
+        play(prev, expand: isExpanded)
     }
 
-    var hasPreviousChannel: Bool { previousChannel != nil }
-
+    @discardableResult
     func tune(number: String) -> Bool {
         let normalized = number.replacingOccurrences(of: "-", with: ".")
-        if let ch = tuners.channels.first(where: { $0.number == normalized }) ?? tuners.channels.first(where: { $0.number.hasPrefix(normalized + ".") }) {
-            play(ch, fullScreen: isFullScreen)
+        if let ch = tuners.channels.first(where: { $0.number == normalized })
+            ?? tuners.channels.first(where: { $0.number.hasPrefix(normalized + ".") }) {
+            play(ch, expand: true)
             return true
         }
         return false
     }
 
     func stop() {
+        tuneTask?.cancel()
         saveResumeIfNeeded()
         player.stop()
         item = nil
-        isFullScreen = false
+        isExpanded = false
         cancelSleepTimer()
         MPNowPlayingInfoCenter.default().nowPlayingInfo = nil
         try? AVAudioSession.sharedInstance().setActive(false, options: .notifyOthersOnDeactivation)
@@ -149,10 +185,14 @@ final class PlaybackCoordinator {
         settings.aspectMode = mode
     }
 
-    func cycleAspect() {
-        let all = AspectMode.allCases
-        let idx = all.firstIndex(of: player.aspect) ?? 0
-        setAspect(all[(idx + 1) % all.count])
+    private func showBanner(_ channel: Channel) {
+        channelBanner = channel
+        bannerTask?.cancel()
+        bannerTask = Task { [weak self] in
+            try? await Task.sleep(nanoseconds: 2_200_000_000)
+            guard !Task.isCancelled else { return }
+            self?.channelBanner = nil
+        }
     }
 
     private func saveResumeIfNeeded() {
@@ -176,8 +216,7 @@ final class PlaybackCoordinator {
     func setSleepTimer(minutes: Int?) {
         cancelSleepTimer()
         guard let minutes else { return }
-        let end = Date().addingTimeInterval(TimeInterval(minutes * 60))
-        sleepTimerEnd = end
+        sleepTimerEnd = Date().addingTimeInterval(TimeInterval(minutes * 60))
         sleepTask = Task { [weak self] in
             try? await Task.sleep(nanoseconds: UInt64(minutes) * 60 * 1_000_000_000)
             guard !Task.isCancelled else { return }
@@ -195,11 +234,13 @@ final class PlaybackCoordinator {
 
     func openMultiview(with channels: [Channel]) {
         var list = channels
-        if let c = item?.channel, !list.contains(c) { list.insert(c, at: 0) }
-        multiviewChannels = Array(list.prefix(max(1, min(4, tuners.totalTuners == 0 ? 4 : tuners.totalTuners))))
+        if let c = currentChannel, !list.contains(c) { list.insert(c, at: 0) }
+        multiviewChannels = Array(list.prefix(maxMultiviewTiles))
         if item != nil { stop() }
         isMultiviewPresented = true
     }
+
+    var maxMultiviewTiles: Int { max(2, min(4, tuners.totalTuners == 0 ? 4 : tuners.totalTuners)) }
 
     // MARK: System integration
 

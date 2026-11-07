@@ -108,7 +108,7 @@ final class DVRStore {
 
     // MARK: Actions
 
-    enum RecordMode { case once, series, newOnly }
+    enum RecordMode { case once, series, newOnly, seriesOnChannel, newOnChannel }
 
     func record(_ program: GuideProgram, mode: RecordMode, settings: AppSettings, tuners: TunerStore) async throws {
         guard let auth = tuners.deviceAuth else { throw HTTPError.unreachable("No DeviceAuth — connect to your tuner first.") }
@@ -127,6 +127,11 @@ final class DVRStore {
             break
         case .newOnly:
             opts.recentOnly = true
+        case .seriesOnChannel:
+            opts.channelOnly = program.channelNumber
+        case .newOnChannel:
+            opts.recentOnly = true
+            opts.channelOnly = program.channelNumber
         }
         try await CloudAPI.addRule(seriesID: seriesID, options: opts, deviceAuth: auth)
         await syncAll(tuners: tuners)
@@ -135,13 +140,21 @@ final class DVRStore {
     }
 
     func addSeriesRule(_ result: SeriesSearchResult, newOnly: Bool, channel: String?, settings: AppSettings, tuners: TunerStore) async throws {
-        guard let auth = tuners.deviceAuth else { return }
+        try await recordSeries(seriesID: result.seriesID, newOnly: newOnly, channel: channel, settings: settings, tuners: tuners)
+    }
+
+    /// Records every (or every new) episode of a series, optionally only on one channel.
+    func recordSeries(seriesID: String, newOnly: Bool, channel: String?, settings: AppSettings, tuners: TunerStore) async throws {
+        guard let auth = tuners.deviceAuth else { throw HTTPError.unreachable("Connect to your HDHomeRun first.") }
+        guard !tuners.storageDevices.isEmpty else {
+            throw HTTPError.unreachable("No HDHomeRun storage found. Plug a USB drive into your FLEX 4K (or run HDHomeRun DVR on a NAS/PC) to record.")
+        }
         var opts = CloudAPI.RuleOptions()
         opts.recentOnly = newOnly
         opts.channelOnly = channel
         opts.startPadding = settings.startPaddingSeconds
         opts.endPadding = settings.endPaddingSeconds
-        try await CloudAPI.addRule(seriesID: result.seriesID, options: opts, deviceAuth: auth)
+        try await CloudAPI.addRule(seriesID: seriesID, options: opts, deviceAuth: auth)
         await syncAll(tuners: tuners)
     }
 

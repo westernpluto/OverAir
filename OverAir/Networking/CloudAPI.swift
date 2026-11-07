@@ -16,7 +16,7 @@ enum CloudAPI {
         var cursor = start
         let end = start.addingTimeInterval(TimeInterval(hours) * 3600)
         var iterations = 0
-        while cursor < end && iterations < 12 {
+        while cursor < end && iterations < max(12, hours / 2 + 4) {
             iterations += 1
             let url = apiBase.appendingPathComponent("guide").appendingQuery([
                 "DeviceAuth": deviceAuth,

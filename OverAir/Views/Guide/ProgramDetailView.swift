@@ -33,6 +33,16 @@ struct ProgramDetailView: View {
                         Text(s).font(.body).foregroundStyle(.primary.opacity(0.9))
                     }
                     detailsGrid
+                    if let channel {
+                        NavigationLink {
+                            ChannelDetailView(channel: channel)
+                        } label: {
+                            Label("Everything on \(channel.number) \(channel.name)", systemImage: "calendar")
+                                .frame(maxWidth: .infinity, alignment: .leading)
+                                .cardStyle(padding: 12)
+                        }
+                        .buttonStyle(.plain)
+                    }
                     otherAirings
                 }
                 .padding(.horizontal)
@@ -112,19 +122,20 @@ struct ProgramDetailView: View {
                 } else if program.end > Date() {
                     Menu {
                         if hasStorage && program.seriesID != nil {
-                            Section("HDHomeRun Storage") {
-                                Button { recordDVR(.once) } label: { Label("This Episode", systemImage: "record.circle") }
-                                Button { recordDVR(.series) } label: { Label("All Episodes", systemImage: "square.stack.3d.down.right") }
-                                Button { recordDVR(.newOnly) } label: { Label("New Episodes Only", systemImage: "sparkles") }
+                            Section("Save to HDHomeRun storage") {
+                                Button { recordDVR(.once) } label: { Label("Just This Airing", systemImage: "record.circle") }
+                                Button { recordDVR(.newOnChannel) } label: { Label("New Episodes on \(channel?.name ?? "This Channel")", systemImage: "sparkles") }
+                                Button { recordDVR(.seriesOnChannel) } label: { Label("All Episodes on \(channel?.name ?? "This Channel")", systemImage: "square.stack.3d.down.right") }
+                                Button { recordDVR(.series) } label: { Label("All Episodes, Any Channel", systemImage: "antenna.radiowaves.left.and.right") }
                             }
                         }
                         if program.isAiring() {
-                            Section("This iPhone") {
-                                Button { recordLocal() } label: { Label("Record to iPhone", systemImage: "iphone.and.arrow.forward") }
+                            Section("Save to this iPhone") {
+                                Button { recordLocal() } label: { Label("Record Now Until It Ends", systemImage: "iphone.and.arrow.forward") }
                             }
                         }
                         if !hasStorage {
-                            Text("Attach a USB drive to your HDHomeRun to schedule recordings.")
+                            Text("Plug a USB drive into your HDHomeRun to schedule recordings.")
                         }
                     } label: {
                         Label("Record", systemImage: "record.circle").frame(maxWidth: .infinity, minHeight: 30)
