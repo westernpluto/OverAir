@@ -113,11 +113,14 @@ final class PCMConverter {
         var consumed = false
 
         init(_ packet: [UInt8]) {
-            count = packet.count
-            bytes = .allocate(byteCount: max(count, 1), alignment: 16)
-            packet.withUnsafeBytes { bytes.copyMemory(from: $0.baseAddress!, byteCount: count) }
-            desc = .allocate(capacity: 1)
-            desc.initialize(to: AudioStreamPacketDescription(mStartOffset: 0, mVariableFramesInPacket: 0, mDataByteSize: UInt32(count)))
+            let n = packet.count
+            let buffer = UnsafeMutableRawPointer.allocate(byteCount: max(n, 1), alignment: 16)
+            packet.withUnsafeBytes { buffer.copyMemory(from: $0.baseAddress!, byteCount: n) }
+            let d = UnsafeMutablePointer<AudioStreamPacketDescription>.allocate(capacity: 1)
+            d.initialize(to: AudioStreamPacketDescription(mStartOffset: 0, mVariableFramesInPacket: 0, mDataByteSize: UInt32(n)))
+            count = n
+            bytes = buffer
+            desc = d
         }
 
         deinit { bytes.deallocate(); desc.deallocate() }
