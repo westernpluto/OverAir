@@ -4,47 +4,42 @@ A live TV app for the **HDHomeRun FLEX 4K** (and every other HDHomeRun tuner), b
 
 ## Features
 
-**Find your tuner automatically**
-- Looks for your tuner four ways at once: the SiliconDust cloud lookup, the native HDHomeRun UDP broadcast, a quick sweep of your local network, and addresses it already knows.
-- You can also add a device by IP address or hostname. Multiple tuners and storage devices are supported.
+**Designed for iPhone Duo (and every iPhone)**
+- Uses Apple's standard containers, as Apple's iPhone Duo guide recommends.
+  - A tab bar on iPhone, vertical bars on the Duo's outer display, and an adaptable sidebar when it's open.
+  - A Search tab, and the mini player sits in the system's bottom-accessory slot.
+- The player uses an `ArrangementView` overlay. Flat, the controls float over the video. Partially folded (tabletop or book), the video takes one half and the controls the other, always visible.
+- Grids use an even number of columns so they split cleanly at the fold. Multiview tiles also stay clear of the fold, using the fold's reserved region.
 
-**Live TV**
-- Plays the streams the tuner sends directly. libVLC decodes MPEG-2, H.264 and HEVC video with AC-3, E-AC-3, AAC and MP2 audio. Deinterlacing is on by default.
-- A home screen with an "On Now" carousel, category chips (Movies, Sports, News, Kids), recently watched channels, and a channel list showing live progress and what's on next.
-- In the player:
-  - Swipe left/right to change channels, swipe up for a channel strip, swipe down to minimize.
-  - Pinch or double-tap to switch between fit, fill and stretch.
-  - Number keypad, jump back to the previous channel, sleep timer (including "end of this show").
-  - Closed captions (EIA-608/708), audio track picker, AirPlay audio and Chromecast casting.
-  - Optional on-screen signal meter.
-- A mini player keeps playing while you browse the guide or DVR.
-- **Multiview:** watch up to 4 channels at once, one per FLEX 4K tuner. Tap a tile to choose which one you hear.
-- Background audio, Lock Screen / Control Center controls, and `overair://channel/5.1` deep links.
+**Live TV that's easy to use**
+- Labeled quick actions: Resume, Channel Number and Multiview. Favorites appear at the top, and filter chips (Favorites, Movies, Sports, News, Kids) show what's on now.
+- In the player, every control has a name:
+  - The previous/next channel buttons show which channel they go to.
+  - The bottom bar has Channels, Captions, Audio, Record and More.
+  - Swipe left/right to change channels, swipe up to show channels, swipe down to keep watching while you browse.
+  - A one-time tips card explains the gestures.
+- Fast, reliable channel changes. Each stream gets its own player and the old one shuts down off the main thread, so the old tuner is released right away. Rapid channel presses are combined so only the channel you land on uses a tuner.
+- **Multiview:** watch up to 4 channels, with the whole 16:9 picture in every tile. Tap a tile to hear it, double-tap for full screen.
+- Captions, audio tracks, sleep timer, AirPlay audio, Chromecast, Lock Screen controls and background audio.
 
-**Guide**
-- A fast scrolling grid with the time bar and channel column pinned in place, a red "now" line, and title text that stays visible as you scroll.
-- Category color coding and filters, a favorites-only view, quick jumps ("Tonight", "Tomorrow"), zoom, and 8–48 hours of data.
-- Each program has a detail page with Watch, Record (one episode, all episodes, or new only), Remind Me (a notification that opens straight to the channel), and other airings.
+**Guide and finding shows to record**
+- Fast scrolling grid with a day picker (Now, Tonight, Tomorrow, …) and category colors.
+- **Tap a channel** to open its page: what's on, every show it airs with one-tap **"record on this channel"** (new episodes or all), and a day-by-day schedule.
+- **Search** across channels, listings, the full HDHomeRun series catalog (to record shows even beyond the guide), and your recordings. You can also browse upcoming movies, sports, news and kids programs.
 
-**DVR**
-- Records to **HDHomeRun storage**: a USB drive in the FLEX 4K, or HDHomeRun DVR running on a NAS/PC.
-  - Library sections: Recording Now, Continue Watching, and Recently Recorded, plus a per-show view.
-  - Resume position, watched/unwatched, delete (optionally allowing a re-record), and a storage gauge.
-  - Recording rules: series or new episodes only, a single channel, start/end padding, and drag-to-reorder priority.
-  - An upcoming schedule that warns when there aren't enough tuners for overlapping recordings.
-  - Search for shows to record.
-- Records to **this iPhone** from any live channel, stopping when the show ends or when you stop it. Recordings show up in the Files app and can be shared.
+**Recordings**
+- HDHomeRun storage (a USB drive in the FLEX 4K, or a NAS):
+  - Library with Recording Now, Continue Watching, Recently Recorded and per-show folders, plus resume and watched states.
+  - Scheduled list with tuner-conflict warnings, and series rules with padding and priority.
+- Record to this iPhone from any live channel.
 
-**Remote viewing**
-- Choose Automatic, Home, or Remote. Automatic tries the home network first, then your saved remote addresses (Tailscale, WireGuard, DDNS/port forward).
-- Every tuner and DVR address is rewritten to go through the remote host, and the buffer is larger when you're away.
+**Away from home, without the hoops**
+- The HDHomeRun has no cloud relay, so OverAir walks you through a one-time setup: Tailscale (recommended), your router's VPN, or port forwarding.
+- After that it's automatic. OverAir remembers your tuner's home address and uses it whenever the route home is up. It detects Tailscale or a VPN on the phone, and for port forwarding it keeps your home's public IP up to date.
+- A **Test Connection** button and clear status ("You're home", "Connected from away", "Can't reach your tuner") show where you stand.
 
 **Tools**
-- Live per-tuner signal strength, signal quality, symbol quality and bitrate, for aiming your antenna.
-- Start a channel scan from the app. Favorite and hide channels, and hide DRM channels.
-
-**Layout**
-- iPhone uses tabs. Wide screens (unfolded foldables, iPad, landscape) switch automatically to a sidebar layout with favorites.
+- Live signal meters per tuner, channel scans, favorites and hidden channels, and device details.
 
 ## Building the .ipa with Xcode 27.1
 
