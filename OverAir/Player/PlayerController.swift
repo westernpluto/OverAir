@@ -3,6 +3,8 @@ import Observation
 import UIKit
 #if canImport(VLCKitSPM)
 import VLCKitSPM
+#else
+#error("VLCKit is missing. In Xcode choose File > Packages > Resolve Package Versions so the vlckit-spm package is downloaded.")
 #endif
 
 struct MediaTrack: Identifiable, Hashable {
